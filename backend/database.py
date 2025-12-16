@@ -371,6 +371,37 @@ def get_artist_by_id(artist_id: int) -> Optional[Dict[str, Any]]:
 
         return artist
 
+def check_artist_exists(name_noob: str = "", name_nai: str = "", danbooru_link: str = "") -> Optional[Dict[str, Any]]:
+    """检查画师是否已存在"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        conditions = []
+        params = []
+        
+        if name_noob:
+            conditions.append("name_noob = ?")
+            params.append(name_noob)
+            
+        if name_nai:
+            conditions.append("name_nai = ?")
+            params.append(name_nai)
+            
+        if danbooru_link:
+            conditions.append("danbooru_link = ?")
+            params.append(danbooru_link)
+            
+        if not conditions:
+            return None
+            
+        query = f"SELECT * FROM artists WHERE {' OR '.join(conditions)} LIMIT 1"
+        cursor.execute(query, params)
+        row = cursor.fetchone()
+        
+        if row:
+            return dict(row)
+        return None
+
 def find_duplicate_artists() -> List[Dict[str, Any]]:
     """查找重复的画师"""
     with get_db() as conn:

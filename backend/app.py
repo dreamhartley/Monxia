@@ -47,7 +47,7 @@ from database import (
     init_db, get_all_categories, create_category, update_category, get_all_artists,
     get_artists_by_category, create_artist, update_artist, delete_artist,
     get_artist_by_id, find_duplicate_artists, get_db, get_artist_categories,
-    set_artist_categories
+    set_artist_categories, check_artist_exists
 )
 from utils import (
     auto_complete_names, format_noob, format_nai,
@@ -59,9 +59,10 @@ app = Flask(__name__)
 
 # 配置Flask
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
-app.config['SESSION_TYPE'] = 'filesystem'
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['PERMANENT_SESSION_LIFETIME'] = 86400 * 7
 
 # 配置CORS，支持React前端开发服务器
 # 前端可能运行在 3000 (Create React App) 或 5173 (Vite) 端口
@@ -84,6 +85,12 @@ ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD')
 
 if not ADMIN_USERNAME or not ADMIN_PASSWORD:
     raise RuntimeError("请在 .env 文件中配置 ADMIN_USERNAME 和 ADMIN_PASSWORD")
+
+# 每次请求时刷新 session，确保活跃用户不会被登出
+@app.before_request
+def refresh_session():
+    session.permanent = True
+    session.modified = True
 
 # 登录验证装饰器
 def login_required(f):
@@ -125,6 +132,7 @@ def api_login():
         password = data.get('password', '')
 
         if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+            session.permanent = True  # 设置 session 为永久
             session['logged_in'] = True
             session['username'] = username
             return jsonify({"success": True, "message": "登录成功"})
@@ -283,6 +291,16 @@ def api_create_artist():
 
         # 自动补全名称
         name_noob, name_nai, danbooru_link = auto_complete_names(name_noob, name_nai, danbooru_link)
+
+        # 检查重复
+        existing_artist = check_artist_exists(name_noob, name_nai, danbooru_link)
+        if existing_artist:
+            exist_name = existing_artist.get('name_noob') or existing_artist.get('name_nai') or '未知'
+            return jsonify({
+                "success": False,
+                "error": f"画师已存在: {exist_name} (ID: {existing_artist['id']})",
+                "data": existing_artist
+            }), 409
 
         artist_id = create_artist(
             category_ids=category_ids,

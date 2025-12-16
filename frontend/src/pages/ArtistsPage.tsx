@@ -84,6 +84,7 @@ export default function ArtistsPage() {
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [currentArtist, setCurrentArtist] = useState<Artist | null>(null)
+  const [isNewArtistEditing, setIsNewArtistEditing] = useState(false)
   const [previewImage, setPreviewImage] = useState<{
     url: string
     origin: { x: number; y: number }
@@ -91,6 +92,7 @@ export default function ArtistsPage() {
   const [formLoading, setFormLoading] = useState(false)
 
   // Form states
+  const [simpleAddName, setSimpleAddName] = useState('')
   const [formData, setFormData] = useState<CreateArtistData & { notes?: string }>({
     category_ids: [],
     name_noob: '',
@@ -99,6 +101,11 @@ export default function ArtistsPage() {
     notes: '',
     skip_danbooru: false,
   })
+
+  const getDisplayName = (artist: Artist) => {
+    const name = artist.name_nai || artist.name_noob || '未命名'
+    return name.replace(/^artist:/, '')
+  }
 
   // Filtered artists
   const filteredArtists = useMemo(() => {
@@ -151,9 +158,117 @@ export default function ArtistsPage() {
       notes: '',
       skip_danbooru: false,
     })
+    setSimpleAddName('')
   }
 
-  const handleAutoComplete = async () => {
+  // 简化的添加流程
+  const handleSimpleAdd = async () => {
+    if (formData.category_ids.length === 0) {
+      alert('请选择分类')
+      return
+    }
+    if (!simpleAddName.trim()) {
+      alert('请输入画师名称')
+      return
+    }
+
+    setFormLoading(true)
+    try {
+      // 1. 自动补全名称信息
+      const autoCompleteRes = await toolsApi.autoComplete(simpleAddName, '', '')
+      let nameData = {
+        name_noob: simpleAddName, // 默认使用用户输入
+        name_nai: '',
+        danbooru_link: '',
+      }
+
+      if (autoCompleteRes.success && autoCompleteRes.data) {
+        nameData = {
+          name_noob: autoCompleteRes.data.name_noob || simpleAddName,
+          name_nai: autoCompleteRes.data.name_nai,
+          danbooru_link: autoCompleteRes.data.danbooru_link,
+        }
+      }
+
+      // 2. 创建画师
+      const createData = {
+        ...nameData,
+        category_ids: formData.category_ids,
+        notes: '',
+        skip_danbooru: false,
+      }
+
+      const createRes = await artistApi.create(createData)
+
+      if (createRes.success && createRes.data) {
+        const newArtistId = createRes.data.id
+
+        // 3. 尝试获取作品数据 (如果有链接)
+        if (nameData.danbooru_link) {
+          await toolsApi.fetchPostCounts([newArtistId])
+        }
+
+        // 4. 获取最新数据
+        const finalArtistRes = await artistApi.getById(newArtistId)
+        if (finalArtistRes.success && finalArtistRes.data) {
+          // 5. 切换到编辑模式
+          const artist = finalArtistRes.data
+          setCurrentArtist(artist)
+          // 填充表单数据以供编辑
+          setFormData({
+            category_ids: artist.categories?.map((c) => c.id) || [],
+            name_noob: artist.name_noob || '',
+            name_nai: artist.name_nai || '',
+            danbooru_link: artist.danbooru_link || '',
+            notes: artist.notes || '',
+            skip_danbooru: artist.skip_danbooru || false,
+          })
+
+          setIsNewArtistEditing(true) // 标记为新建编辑
+          setIsAddDialogOpen(false)
+          setIsEditDialogOpen(true)
+          await loadData() // 刷新列表
+        }
+      } else {
+        // 如果是重复画师，询问是否直接编辑现有画师
+        if (createRes.error && createRes.error.includes('画师已存在') && createRes.data) {
+          if (confirm(`${createRes.error}\n是否直接编辑该画师？`)) {
+            const existingArtist = createRes.data as Artist
+             // 获取完整信息
+             const fullArtistRes = await artistApi.getById(existingArtist.id)
+             if (fullArtistRes.success && fullArtistRes.data) {
+               const artist = fullArtistRes.data
+               setCurrentArtist(artist)
+               setFormData({
+                 category_ids: artist.categories?.map((c) => c.id) || [],
+                 name_noob: artist.name_noob || '',
+                 name_nai: artist.name_nai || '',
+                 danbooru_link: artist.danbooru_link || '',
+                 notes: artist.notes || '',
+                 skip_danbooru: artist.skip_danbooru || false,
+               })
+               
+               setIsNewArtistEditing(false) // 不是新建的，是已存在的
+               setIsAddDialogOpen(false)
+               setIsEditDialogOpen(true)
+             }
+          }
+        } else {
+          alert(createRes.error || '创建失败')
+        }
+      }
+    } catch (e) {
+      console.error(e)
+      alert('处理失败')
+    } finally {
+      setFormLoading(false)
+    }
+  }
+
+  // 编辑模式下的手动补全
+  const handleManualAutoComplete = async () => {
+    if (!currentArtist) return
+
     setFormLoading(true)
     try {
       // 1. 补全名称和链接
@@ -162,7 +277,7 @@ export default function ArtistsPage() {
         formData.name_nai || '',
         formData.danbooru_link || ''
       )
-      
+
       let newFormData = { ...formData }
 
       if (res.success && res.data) {
@@ -173,94 +288,36 @@ export default function ArtistsPage() {
           danbooru_link: res.data!.danbooru_link,
         }
         setFormData(newFormData)
+        alert('名称补全成功')
       }
 
-      // 2. 如果有链接且不跳过Danbooru检测，尝试获取作品数量和封面
+      // 2. 如果有链接，询问是否获取数据
       if (newFormData.danbooru_link && !newFormData.skip_danbooru) {
-        // 提醒用户
-        if (!confirm('这将重新获取该画师的作品数据，并可能覆盖当前的封面图片。是否继续？')) {
-            setFormLoading(false)
-            return
-        }
-
-        // 如果是编辑模式，使用当前画师ID
-        // 如果是添加模式，需要先临时创建画师记录（因为后端接口需要artist_id）
-        let targetArtistId = currentArtist?.id
-
-        if (!targetArtistId) {
-          // 添加模式：先保存基本信息
-           if (newFormData.category_ids.length === 0) {
-             alert('请先选择分类以便进行自动数据获取')
-             setFormLoading(false)
-             return
-           }
-           const createRes = await artistApi.create(newFormData)
-           if (createRes.success && createRes.data) {
-             targetArtistId = createRes.data.id
-             // 更新为编辑模式，防止重复创建
-             setCurrentArtist(createRes.data)
-             setIsAddDialogOpen(false)
-             setIsEditDialogOpen(true)
-             // 刷新列表以显示新添加的画师
-             await loadData()
-           } else {
-             console.error('Failed to create temp artist:', createRes.error)
-             // 如果创建失败，仅保留名称补全结果
-             setFormLoading(false)
-             return
-           }
-        }
-
-        if (targetArtistId) {
-            const countRes = await toolsApi.fetchPostCounts([targetArtistId])
-            if (countRes.success && countRes.data && countRes.data[targetArtistId]) {
-                // 重新获取画师最新信息（包含可能更新的图片）
-                const updatedArtistRes = await artistApi.getById(targetArtistId)
-                if (updatedArtistRes.success && updatedArtistRes.data) {
-                    // 更新当前编辑的画师信息
-                    setCurrentArtist(updatedArtistRes.data)
-                    // 刷新列表
-                    await loadData()
-                    alert('自动补全完成！')
-                }
-            } else {
-                alert('获取作品数据失败: ' + (countRes.error || '未知错误'))
+        if (
+          confirm(
+            '是否重新获取该画师的作品数据？这可能会覆盖当前的封面图片。'
+          )
+        ) {
+          const countRes = await toolsApi.fetchPostCounts([currentArtist.id])
+          if (
+            countRes.success &&
+            countRes.data &&
+            countRes.data[currentArtist.id]
+          ) {
+            const updatedArtistRes = await artistApi.getById(currentArtist.id)
+            if (updatedArtistRes.success && updatedArtistRes.data) {
+              setCurrentArtist(updatedArtistRes.data)
+              await loadData()
+              alert('数据获取完成！')
             }
+          } else {
+            alert('获取作品数据失败: ' + (countRes.error || '未知错误'))
+          }
         }
-      } else {
-          alert('名称补全成功')
       }
     } catch (error) {
       console.error('Auto complete failed:', error)
       alert('自动补全失败')
-    } finally {
-      setFormLoading(false)
-    }
-  }
-
-  const handleAddArtist = async () => {
-    if (formData.category_ids.length === 0) {
-      alert('请至少选择一个分类')
-      return
-    }
-    if (!formData.name_noob && !formData.name_nai) {
-      alert('请至少填写一个画师名称')
-      return
-    }
-
-    setFormLoading(true)
-    try {
-      const res = await artistApi.create(formData)
-      if (res.success) {
-        await loadData()
-        setIsAddDialogOpen(false)
-        resetForm()
-      } else {
-        alert(res.error || '创建失败')
-      }
-    } catch (error) {
-      console.error('Failed to create artist:', error)
-      alert('创建失败')
     } finally {
       setFormLoading(false)
     }
@@ -277,6 +334,7 @@ export default function ArtistsPage() {
         setIsEditDialogOpen(false)
         setCurrentArtist(null)
         resetForm()
+        setIsNewArtistEditing(false)
       } else {
         alert(res.error || '更新失败')
       }
@@ -326,8 +384,35 @@ export default function ArtistsPage() {
     }
   }
 
+  const handleQuickCreateCategory = async () => {
+    const name = prompt('请输入新分类名称：')
+    if (!name?.trim()) return
+
+    setFormLoading(true)
+    try {
+      const res = await categoryApi.create(name.trim())
+      if (res.success && res.data) {
+        // 刷新分类列表
+        const categoriesRes = await categoryApi.getAll()
+        if (categoriesRes.success && categoriesRes.data) {
+          setCategories(categoriesRes.data)
+          // 自动选中新分类
+          toggleCategorySelection(res.data.id)
+        }
+      } else {
+        alert(res.error || '创建分类失败')
+      }
+    } catch (error) {
+      console.error('Failed to create category:', error)
+      alert('创建分类失败')
+    } finally {
+      setFormLoading(false)
+    }
+  }
+
   const openEditDialog = (artist: Artist) => {
     setCurrentArtist(artist)
+    setIsNewArtistEditing(false)
     setFormData({
       category_ids: artist.categories?.map((c) => c.id) || [],
       name_noob: artist.name_noob || '',
@@ -337,6 +422,32 @@ export default function ArtistsPage() {
       skip_danbooru: artist.skip_danbooru || false,
     })
     setIsEditDialogOpen(true)
+  }
+
+  const handleEditCancel = async () => {
+    if (isNewArtistEditing && currentArtist) {
+      if (confirm('取消将删除刚刚创建的画师记录，确定吗？')) {
+        setFormLoading(true)
+        try {
+          await artistApi.delete(currentArtist.id)
+          await loadData()
+          setIsEditDialogOpen(false)
+          setCurrentArtist(null)
+          resetForm()
+          setIsNewArtistEditing(false)
+        } catch (error) {
+          console.error('Failed to delete temp artist:', error)
+          alert('删除失败')
+        } finally {
+          setFormLoading(false)
+        }
+      }
+    } else {
+      setIsEditDialogOpen(false)
+      setCurrentArtist(null)
+      resetForm()
+      setIsNewArtistEditing(false)
+    }
   }
 
   const copyToClipboard = (text: string) => {
@@ -404,7 +515,7 @@ export default function ArtistsPage() {
       {/* 信息区域 */}
       <CardContent className="p-4">
         <h3 className="font-semibold text-foreground truncate mb-1">
-          {artist.name_noob || artist.name_nai || '未命名'}
+          {getDisplayName(artist)}
         </h3>
         <div className="flex flex-wrap gap-1 mb-2">
           {artist.categories?.map((cat) => (
@@ -463,7 +574,7 @@ export default function ArtistsPage() {
         {/* 信息区域 */}
         <div className="flex-1 min-w-0">
           <h3 className="font-semibold text-foreground truncate">
-            {artist.name_noob || artist.name_nai || '未命名'}
+            {getDisplayName(artist)}
           </h3>
           <div className="flex flex-wrap gap-1 mt-1">
             {artist.categories?.slice(0, 3).map((cat) => (
@@ -703,7 +814,7 @@ export default function ArtistsPage() {
           <DialogHeader>
             <DialogTitle>添加画师</DialogTitle>
             <DialogDescription>
-              添加新画师到你的收藏库，至少填写一个名称格式
+              添加新画师，支持自动补全信息
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
@@ -756,6 +867,21 @@ export default function ArtistsPage() {
                     <SelectValue placeholder="选择分类添加..." />
                   </SelectTrigger>
                   <SelectContent>
+                    <div className="p-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="w-full justify-start text-primary"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          handleQuickCreateCategory()
+                        }}
+                      >
+                        <Plus className="h-4 w-4 mr-2" />
+                        新建分类
+                      </Button>
+                    </div>
+                    <DropdownMenuSeparator />
                     {categories
                       .filter((cat) => !formData.category_ids.includes(cat.id))
                       .map((cat) => (
@@ -769,90 +895,25 @@ export default function ArtistsPage() {
             </div>
 
             {/* 名称输入 */}
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="name_noob">NOOB 格式</Label>
-                <Input
-                  id="name_noob"
-                  placeholder="artist \(circle\)"
-                  value={formData.name_noob}
-                  onChange={(e) =>
-                    setFormData((prev) => ({ ...prev, name_noob: e.target.value }))
-                  }
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="name_nai">NAI 格式</Label>
-                <Input
-                  id="name_nai"
-                  placeholder="artist:name (circle)"
-                  value={formData.name_nai}
-                  onChange={(e) =>
-                    setFormData((prev) => ({ ...prev, name_nai: e.target.value }))
-                  }
-                />
-              </div>
-            </div>
-
-            {/* Danbooru 链接 */}
             <div className="space-y-2">
-              <Label htmlFor="danbooru_link">Danbooru 链接</Label>
+              <Label htmlFor="simple_name">画师名称 *</Label>
               <Input
-                id="danbooru_link"
-                placeholder="https://danbooru.donmai.us/posts?tags=..."
-                value={formData.danbooru_link}
-                onChange={(e) =>
-                  setFormData((prev) => ({
-                    ...prev,
-                    danbooru_link: e.target.value,
-                  }))
-                }
+                id="simple_name"
+                placeholder="输入画师名称或 Danbooru 链接"
+                value={simpleAddName}
+                onChange={(e) => setSimpleAddName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleSimpleAdd()
+                  }
+                }}
               />
+              <p className="text-xs text-muted-foreground">
+                输入名称后将自动进行格式化和数据获取
+              </p>
             </div>
-
-            {/* 备注 */}
-            <div className="space-y-2">
-              <Label htmlFor="notes">备注</Label>
-              <Textarea
-                id="notes"
-                placeholder="添加备注..."
-                value={formData.notes}
-                onChange={(e) =>
-                  setFormData((prev) => ({ ...prev, notes: e.target.value }))
-                }
-                rows={2}
-              />
-            </div>
-
-            {/* 跳过Danbooru */}
-            <label className="flex items-center space-x-2 cursor-pointer">
-              <Checkbox
-                checked={formData.skip_danbooru}
-                onCheckedChange={(checked) =>
-                  setFormData((prev) => ({
-                    ...prev,
-                    skip_danbooru: checked as boolean,
-                  }))
-                }
-              />
-              <span className="text-sm">跳过 Danbooru 获取</span>
-            </label>
           </div>
           <DialogFooter>
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={handleAutoComplete}
-              disabled={formLoading}
-              className="gap-2 mr-auto"
-            >
-              {formLoading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Sparkles className="h-4 w-4" />
-              )}
-              自动补全
-            </Button>
             <Button
               variant="outline"
               onClick={() => {
@@ -862,7 +923,7 @@ export default function ArtistsPage() {
             >
               取消
             </Button>
-            <Button onClick={handleAddArtist} disabled={formLoading}>
+            <Button onClick={handleSimpleAdd} disabled={formLoading}>
               {formLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               添加
             </Button>
@@ -874,7 +935,7 @@ export default function ArtistsPage() {
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>编辑画师</DialogTitle>
+            <DialogTitle>{currentArtist ? getDisplayName(currentArtist) : '编辑画师'}</DialogTitle>
             <DialogDescription>修改画师信息</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
@@ -927,6 +988,21 @@ export default function ArtistsPage() {
                     <SelectValue placeholder="选择分类添加..." />
                   </SelectTrigger>
                   <SelectContent>
+                    <div className="p-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="w-full justify-start text-primary"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          handleQuickCreateCategory()
+                        }}
+                      >
+                        <Plus className="h-4 w-4 mr-2" />
+                        新建分类
+                      </Button>
+                    </div>
+                    <DropdownMenuSeparator />
                     {categories
                       .filter((cat) => !formData.category_ids.includes(cat.id))
                       .map((cat) => (
@@ -1009,7 +1085,7 @@ export default function ArtistsPage() {
             <Button
               type="button"
               variant="secondary"
-              onClick={handleAutoComplete}
+              onClick={handleManualAutoComplete}
               disabled={formLoading}
               className="gap-2 mr-auto"
             >
@@ -1020,14 +1096,7 @@ export default function ArtistsPage() {
               )}
               自动补全
             </Button>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setIsEditDialogOpen(false)
-                setCurrentArtist(null)
-                resetForm()
-              }}
-            >
+            <Button variant="outline" onClick={handleEditCancel}>
               取消
             </Button>
             <Button onClick={handleEditArtist} disabled={formLoading}>
