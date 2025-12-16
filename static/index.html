@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 画师整理工具</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#667eea',
+                        secondary: '#764ba2'
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid white;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .artist-thumbnail {
+            width: 60px;
+            height: 60px;
+            object-fit: cover;
+        }
+        .animate-slide-in {
+            animation: slideIn 0.3s ease-out;
+        }
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+    </style>
+</head>
+<body class="gradient-bg min-h-screen p-4">
+    <div class="max-w-7xl mx-auto bg-white rounded-xl shadow-2xl overflow-hidden">
+        <!-- 头部 -->
+        <header class="gradient-bg text-white py-8 px-6">
+            <div class="flex justify-between items-center">
+                <div class="flex-1">
+                    <h1 class="text-4xl font-bold mb-2">AI 画师整理工具</h1>
+                    <p class="text-lg opacity-90">自动补全画师标签、整理分类、获取作品数量</p>
+                </div>
+                <button
+                    id="logout-btn"
+                    class="px-4 py-2 bg-white bg-opacity-20 hover:bg-opacity-30 rounded-lg transition flex items-center gap-2"
+                    title="登出"
+                >
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
+                    </svg>
+                    <span>登出</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- 标签页导航 -->
+        <nav class="flex bg-gray-50 border-b-2 border-gray-200 px-4">
+            <button class="tab-btn px-6 py-4 text-gray-600 hover:text-primary hover:bg-purple-50 transition border-b-4 border-transparent data-[active=true]:text-primary data-[active=true]:border-primary data-[active=true]:font-semibold"
+                    data-tab="artists" data-active="true">
+                画师管理
+            </button>
+            <button class="tab-btn px-6 py-4 text-gray-600 hover:text-primary hover:bg-purple-50 transition border-b-4 border-transparent data-[active=true]:text-primary data-[active=true]:border-primary data-[active=true]:font-semibold"
+                    data-tab="categories">
+                分类管理
+            </button>
+            <button class="tab-btn px-6 py-4 text-gray-600 hover:text-primary hover:bg-purple-50 transition border-b-4 border-transparent data-[active=true]:text-primary data-[active=true]:border-primary data-[active=true]:font-semibold"
+                    data-tab="presets">
+                画师串
+            </button>
+            <button class="tab-btn px-6 py-4 text-gray-600 hover:text-primary hover:bg-purple-50 transition border-b-4 border-transparent data-[active=true]:text-primary data-[active=true]:border-primary data-[active=true]:font-semibold"
+                    data-tab="tools">
+                工具
+            </button>
+            <button class="tab-btn px-6 py-4 text-gray-600 hover:text-primary hover:bg-purple-50 transition border-b-4 border-transparent data-[active=true]:text-primary data-[active=true]:border-primary data-[active=true]:font-semibold"
+                    data-tab="import-export">
+                导入/导出
+            </button>
+        </nav>
+
+        <!-- 画师管理标签页 -->
+        <div class="tab-content p-6" id="artists-tab" data-active="true">
+            <!-- 工具栏 -->
+            <div class="flex flex-wrap gap-3 mb-6 items-center">
+                <select id="filter-category" class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                    <option value="">所有分类</option>
+                </select>
+
+                <label class="flex items-center gap-2 px-4 py-2 border border-yellow-300 rounded-lg bg-yellow-50 cursor-pointer hover:bg-yellow-100 transition">
+                    <input type="checkbox" id="filter-data-status" class="w-4 h-4 text-primary focus:ring-2 focus:ring-primary rounded">
+                    <span class="text-gray-700 font-medium">待补全</span>
+                </label>
+
+                <!-- 搜索框 -->
+                <div class="relative flex-1 min-w-[200px] max-w-[400px]">
+                    <input type="text" id="search-input" class="w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="搜索画师名称...">
+                    <svg class="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                    </svg>
+                    <button id="clear-search" class="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 hidden" title="清除搜索">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <!-- 布局切换按钮 -->
+                <div class="flex gap-2 ml-auto">
+                    <button id="layout-grid" class="p-2 border-2 border-primary bg-primary text-white rounded-lg hover:bg-purple-600 transition" title="网格布局">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/>
+                        </svg>
+                    </button>
+                    <button id="layout-list" class="p-2 border-2 border-gray-300 text-gray-600 rounded-lg hover:border-primary hover:text-primary transition" title="列表布局">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <button class="px-4 py-2 bg-primary text-white rounded-lg hover:bg-purple-600 transition shadow-md" id="add-artist-btn">
+                    添加画师
+                </button>
+                <button class="px-4 py-2 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-lg hover:from-purple-700 hover:to-blue-700 transition shadow-md" id="auto-complete-all-btn">
+                    一键自动补全
+                </button>
+            </div>
+
+            <!-- 进度条 -->
+            <div id="progress-container" class="hidden mb-6">
+                <div class="bg-white border-2 border-primary rounded-lg p-4 shadow-lg">
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="text-sm font-semibold text-gray-700" id="progress-text">处理中...</span>
+                        <span class="text-sm font-semibold text-primary" id="progress-percent">0%</span>
+                    </div>
+                    <div class="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                        <div id="progress-bar" class="bg-gradient-to-r from-purple-600 to-blue-600 h-3 rounded-full transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                    <div class="mt-2 text-xs text-gray-600" id="progress-detail">准备开始...</div>
+                </div>
+            </div>
+
+            <!-- 画师列表 -->
+            <div id="artist-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                <!-- 画师卡片将动态加载 -->
+            </div>
+        </div>
+
+        <!-- 分类管理标签页 -->
+        <div class="tab-content p-6 hidden" id="categories-tab">
+            <div class="mb-6">
+                <button class="px-4 py-2 bg-primary text-white rounded-lg hover:bg-purple-600 transition shadow-md" id="add-category-btn">
+                    添加分类
+                </button>
+            </div>
+            <div id="category-list" class="space-y-3">
+                <!-- 分类列表将动态加载 -->
+            </div>
+        </div>
+
+        <!-- 画师串标签页 -->
+        <div class="tab-content p-6 hidden" id="presets-tab">
+            <div class="mb-6">
+                <button class="px-4 py-2 bg-primary text-white rounded-lg hover:bg-purple-600 transition shadow-md" id="create-preset-btn">
+                    创建画师串
+                </button>
+            </div>
+            <div id="preset-list" class="space-y-4">
+                <!-- 画师串列表将动态加载 -->
+            </div>
+        </div>
+
+        <!-- 工具标签页 -->
+        <div class="tab-content p-6 hidden" id="tools-tab">
+            <div class="bg-gray-50 rounded-lg p-6 mb-6">
+                <h2 class="text-xl font-bold text-primary mb-4">去重工具</h2>
+                <button class="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition shadow-md" id="find-duplicates-btn">
+                    查找重复画师
+                </button>
+                <div id="duplicates-result" class="bg-white border border-gray-200 rounded-lg p-4 mt-4 min-h-[100px]"></div>
+            </div>
+
+            <div class="bg-gray-50 rounded-lg p-6">
+                <h2 class="text-xl font-bold text-primary mb-4">自动补全测试</h2>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block font-semibold mb-2">NOOB格式:</label>
+                        <input type="text" id="test-noob" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="例如: artist name">
+                    </div>
+                    <div>
+                        <label class="block font-semibold mb-2">NAI格式:</label>
+                        <input type="text" id="test-nai" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="例如: artist:artist name">
+                    </div>
+                    <div>
+                        <label class="block font-semibold mb-2">Danbooru链接:</label>
+                        <input type="text" id="test-link" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="https://danbooru.donmai.us/posts?tags=...">
+                    </div>
+                    <button class="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition shadow-md" id="test-auto-complete-btn">
+                        测试自动补全
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 导入/导出标签页 -->
+        <div class="tab-content p-6 hidden" id="import-export-tab">
+            <div class="bg-gray-50 rounded-lg p-6 mb-6">
+                <h2 class="text-xl font-bold text-primary mb-4">导出</h2>
+                <div class="flex gap-3">
+                    <button class="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition shadow-md" id="export-json-btn">
+                        导出为 JSON
+                    </button>
+                    <button class="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition shadow-md" id="export-excel-btn">
+                        导出为 Excel
+                    </button>
+                </div>
+            </div>
+
+            <div class="bg-gray-50 rounded-lg p-6">
+                <h2 class="text-xl font-bold text-primary mb-4">导入</h2>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block font-semibold mb-2">选择Excel文件:</label>
+                        <input type="file" id="import-excel-file" accept=".xlsx,.xls" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                        <button class="mt-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition shadow-md" id="import-excel-btn">
+                            导入 Excel
+                        </button>
+                    </div>
+                    <div>
+                        <label class="block font-semibold mb-2">或粘贴JSON数据:</label>
+                        <textarea id="import-json-text" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent" rows="10" placeholder='{"categories": [...], "artists": [...]}'></textarea>
+                        <button class="mt-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition shadow-md" id="import-json-btn">
+                            导入 JSON
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 模态框: 画师详情 -->
+    <div class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50" id="artist-detail-modal">
+        <div class="bg-white rounded-xl max-w-3xl w-full mx-4 max-h-[90vh] overflow-auto">
+            <div class="gradient-bg text-white p-6 flex justify-between items-center">
+                <h2 class="text-2xl font-bold" id="detail-artist-name">画师详情</h2>
+                <button class="text-white hover:text-gray-200 text-3xl leading-none" onclick="document.getElementById('artist-detail-modal').classList.add('hidden')">&times;</button>
+            </div>
+            <div class="p-6" id="artist-detail-content">
+                <!-- 详情内容将动态加载 -->
+            </div>
+            <div class="bg-gray-50 p-4 flex gap-3 justify-end">
+                <button class="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition" id="detail-edit-btn">编辑</button>
+                <button class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition" id="detail-delete-btn">删除</button>
+                <button class="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 transition" onclick="document.getElementById('artist-detail-modal').classList.add('hidden')">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 模态框: 添加/编辑画师 -->
+    <div class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50" id="artist-modal">
+        <div class="bg-white rounded-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-auto">
+            <div class="gradient-bg text-white p-6 flex justify-between items-center">
+                <h2 class="text-2xl font-bold" id="artist-modal-title">添加画师</h2>
+                <button class="text-white hover:text-gray-200 text-3xl leading-none" onclick="document.getElementById('artist-modal').classList.add('hidden')">&times;</button>
+            </div>
+            <div class="p-6 space-y-4">
+                <input type="hidden" id="artist-id">
+
+                <!-- 分类选择（多选标签模式） -->
+                <div>
+                    <label class="block font-semibold mb-2">画师分类 <span class="text-red-500">*</span> (必选至少一个):</label>
+
+                    <!-- 已选择的分类标签显示区域 -->
+                    <div id="selected-categories" class="flex flex-wrap gap-2 mb-3 min-h-[36px] p-2 border border-gray-200 rounded-lg bg-gray-50">
+                        <span class="text-gray-400 text-sm" id="no-category-hint">尚未选择分类</span>
+                    </div>
+
+                    <!-- 分类选择下拉框和快速添加按钮 -->
+                    <div class="flex gap-2">
+                        <select id="artist-category-select" class="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent">
+                            <option value="" disabled selected>请选择画师分类</option>
+                        </select>
+                        <button
+                            type="button"
+                            id="quick-add-category-btn"
+                            class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition shadow-md flex items-center gap-1 whitespace-nowrap"
+                            title="快速创建新分类"
+                        >
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                            </svg>
+                            新分类
+                        </button>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block font-semibold mb-2">画师名称 (NOOB格式) <span class="text-red-500">*</span>:</label>
+                    <input type="text" id="artist-noob" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="例如: artist name" required>
+                    <p class="text-xs text-gray-500 mt-1">NOOB 或 NAI 格式至少需要填写一个</p>
+                </div>
+                <div>
+                    <label class="block font-semibold mb-2">画师名称 (NAI格式) <span class="text-red-500">*</span>:</label>
+                    <input type="text" id="artist-nai" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="例如: artist:artist name" required>
+                </div>
+                <div>
+                    <label class="flex items-center gap-2 px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 cursor-pointer hover:bg-gray-100 transition">
+                        <input type="checkbox" id="artist-skip-danbooru" class="w-4 h-4 text-primary focus:ring-2 focus:ring-primary rounded">
+                        <span class="text-gray-700 font-medium">跳过Danbooru检测</span>
+                        <span class="text-xs text-gray-500 ml-auto">（适用于未被Danbooru收录的画师）</span>
+                    </label>
+                </div>
+                <div>
+                    <label class="block font-semibold mb-2">Danbooru链接:</label>
+                    <input type="text" id="artist-link" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="https://danbooru.donmai.us/posts?tags=...">
+                </div>
+                <div>
+                    <label class="block font-semibold mb-2">作品数量:</label>
+                    <input type="number" id="artist-count" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="留空可自动获取">
+                </div>
+                <div>
+                    <label class="block font-semibold mb-2">备注:</label>
+                    <textarea id="artist-notes" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent" rows="3"></textarea>
+                </div>
+                <div>
+                    <label class="block font-semibold mb-2">示例图片:</label>
+                    <div class="flex gap-3 items-center">
+                        <input type="file" id="artist-image-upload" accept="image/*" class="flex-1 px-4 py-2 border border-gray-300 rounded-lg">
+                        <div id="current-image-preview" class="hidden">
+                            <img id="preview-img" class="w-20 h-20 object-cover rounded-lg border-2 border-gray-300" alt="当前图片">
+                        </div>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-1">支持 PNG, JPG, GIF, WEBP 格式</p>
+                </div>
+            </div>
+            <div class="bg-gray-50 p-4 flex gap-3 justify-end">
+                <button class="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition" id="auto-complete-modal-btn">自动补全</button>
+                <button class="px-4 py-2 bg-primary text-white rounded-lg hover:bg-purple-600 transition" id="save-artist-btn">保存</button>
+                <button class="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 transition" id="cancel-artist-btn">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 模态框: 添加分类 -->
+    <div class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50" id="category-modal">
+        <div class="bg-white rounded-xl max-w-md w-full mx-4">
+            <div class="gradient-bg text-white p-6 flex justify-between items-center">
+                <h2 class="text-2xl font-bold">添加分类</h2>
+                <button class="text-white hover:text-gray-200 text-3xl leading-none" onclick="document.getElementById('category-modal').classList.add('hidden')">&times;</button>
+            </div>
+            <div class="p-6 space-y-4">
+                <div>
+                    <label class="block font-semibold mb-2">分类名称:</label>
+                    <input type="text" id="category-name" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent" required>
+                </div>
+                <div>
+                    <label class="block font-semibold mb-2">显示顺序:</label>
+                    <input type="number" id="category-order" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent" value="0">
+                </div>
+            </div>
+            <div class="bg-gray-50 p-4 flex gap-3 justify-end">
+                <button class="px-4 py-2 bg-primary text-white rounded-lg hover:bg-purple-600 transition" id="save-category-btn">保存</button>
+                <button class="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 transition" id="cancel-category-btn">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 模态框: 创建画师串 -->
+    <div class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50" id="preset-modal">
+        <div class="bg-white rounded-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-auto">
+            <div class="gradient-bg text-white p-6 flex justify-between items-center">
+                <h2 class="text-2xl font-bold">创建画师串</h2>
+                <button class="text-white hover:text-gray-200 text-3xl leading-none" onclick="document.getElementById('preset-modal').classList.add('hidden')">&times;</button>
+            </div>
+            <div class="p-6 space-y-4">
+                <div>
+                    <label class="block font-semibold mb-2">名称:</label>
+                    <input type="text" id="preset-name" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent" required>
+                </div>
+                <div>
+                    <label class="block font-semibold mb-2">描述:</label>
+                    <textarea id="preset-desc" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent" rows="2"></textarea>
+                </div>
+                <div>
+                    <label class="block font-semibold mb-2">选择画师 (按住Ctrl多选):</label>
+                    <select id="preset-artists" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent" multiple size="10">
+                    </select>
+                </div>
+            </div>
+            <div class="bg-gray-50 p-4 flex gap-3 justify-end">
+                <button class="px-4 py-2 bg-primary text-white rounded-lg hover:bg-purple-600 transition" id="save-preset-btn">保存</button>
+                <button class="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 transition" id="cancel-preset-btn">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 加载提示 -->
+    <div class="fixed inset-0 bg-black bg-opacity-70 hidden items-center justify-center z-50 flex-col" id="loading-overlay">
+        <div class="spinner"></div>
+        <p class="text-white mt-4 text-lg">处理中...</p>
+    </div>
+
+    <!-- Toast通知容器 -->
+    <div id="toast-container" class="fixed bottom-4 right-4 z-50 space-y-2"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>
