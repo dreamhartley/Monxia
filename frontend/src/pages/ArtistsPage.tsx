@@ -17,6 +17,7 @@ import {
   List,
   X,
 } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -83,6 +84,10 @@ export default function ArtistsPage() {
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [currentArtist, setCurrentArtist] = useState<Artist | null>(null)
+  const [previewImage, setPreviewImage] = useState<{
+    url: string
+    origin: { x: number; y: number }
+  } | null>(null)
   const [formLoading, setFormLoading] = useState(false)
 
   // Form states
@@ -170,8 +175,14 @@ export default function ArtistsPage() {
         setFormData(newFormData)
       }
 
-      // 2. 如果有链接且不跳过Danbooru检测，尝试获取作品数量和示例图片
+      // 2. 如果有链接且不跳过Danbooru检测，尝试获取作品数量和封面
       if (newFormData.danbooru_link && !newFormData.skip_danbooru) {
+        // 提醒用户
+        if (!confirm('这将重新获取该画师的作品数据，并可能覆盖当前的封面图片。是否继续？')) {
+            setFormLoading(false)
+            return
+        }
+
         // 如果是编辑模式，使用当前画师ID
         // 如果是添加模式，需要先临时创建画师记录（因为后端接口需要artist_id）
         let targetArtistId = currentArtist?.id
@@ -353,7 +364,17 @@ export default function ArtistsPage() {
           <img
             src={`${API_BASE.replace('/api', '')}/images/${artist.image_example}`}
             alt={artist.name_noob || artist.name_nai}
-            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+            className="w-full h-full object-cover object-top transition-transform duration-300 group-hover:scale-105 cursor-pointer"
+            onClick={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect()
+              setPreviewImage({
+                url: `${API_BASE.replace('/api', '')}/images/${artist.image_example}`,
+                origin: {
+                  x: rect.left + rect.width / 2,
+                  y: rect.top + rect.height / 2,
+                },
+              })
+            }}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
@@ -420,7 +441,17 @@ export default function ArtistsPage() {
             <img
               src={`${API_BASE.replace('/api', '')}/images/${artist.image_example}`}
               alt={artist.name_noob || artist.name_nai}
-              className="w-full h-full object-cover"
+              className="w-full h-full object-cover object-top cursor-pointer"
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect()
+                setPreviewImage({
+                  url: `${API_BASE.replace('/api', '')}/images/${artist.image_example}`,
+                  origin: {
+                    x: rect.left + rect.width / 2,
+                    y: rect.top + rect.height / 2,
+                  },
+                })
+              }}
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
@@ -514,7 +545,7 @@ export default function ArtistsPage() {
           }}
         >
           <ImageIcon className="h-4 w-4 mr-2" />
-          上传图片
+          上传封面
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         {artist.name_noob && (
@@ -1037,6 +1068,43 @@ export default function ArtistsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* 图片预览 Overlay */}
+      <AnimatePresence>
+        {previewImage && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+            onClick={() => setPreviewImage(null)}
+          >
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="absolute inset-0"
+            />
+            <motion.img
+              src={previewImage.url}
+              alt="Preview"
+              className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg shadow-2xl cursor-zoom-out z-10"
+              initial={{
+                opacity: 0,
+                scale: 0.1,
+                x: previewImage.origin.x - window.innerWidth / 2,
+                y: previewImage.origin.y - window.innerHeight / 2,
+              }}
+              animate={{ opacity: 1, scale: 1, x: 0, y: 0 }}
+              onClick={(e) => {
+                e.stopPropagation()
+                setPreviewImage(null)
+              }}
+              transition={{
+                type: 'spring',
+                stiffness: 260,
+                damping: 25,
+              }}
+            />
+          </div>
+        )}
+      </AnimatePresence>
 
     </div>
   )

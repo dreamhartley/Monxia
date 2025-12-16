@@ -463,12 +463,13 @@ def api_auto_complete():
 @app.route('/api/tools/auto-complete-all', methods=['POST'])
 @login_required
 def api_auto_complete_all():
-    """一键补全所有画师数据"""
+    """一键补全所有画师数据（名称、链接、作品数、示例图）"""
     try:
         artists = get_all_artists()
         updated_count = 0
         details = []
-
+        
+        # 1. 补全名称和链接
         for artist in artists:
             artist_id = artist['id']
             name_noob = artist.get('name_noob', '')
@@ -493,16 +494,84 @@ def api_auto_complete_all():
                     "id": artist_id,
                     "name_noob": new_noob,
                     "name_nai": new_nai,
-                    "danbooru_link": new_link
+                    "danbooru_link": new_link,
+                    "type": "basic_info"
                 })
+                # 更新内存中的对象，以便后续步骤使用最新链接
+                artist['name_noob'] = new_noob
+                artist['name_nai'] = new_nai
+                artist['danbooru_link'] = new_link
+
+        # 2. 筛选需要获取作品数据的画师
+        # 条件：有链接 且 未跳过 且 (作品数为空 或 没有示例图)
+        artists_to_fetch = []
+        for artist in artists:
+            if artist.get('skip_danbooru'):
+                continue
+                
+            link = artist.get('danbooru_link')
+            if not link:
+                continue
+                
+            needs_fetch = False
+            # 检查作品数
+            if artist.get('post_count') is None or artist.get('post_count') == 0:
+                needs_fetch = True
+            
+            # 检查示例图
+            if not artist.get('image_example'):
+                needs_fetch = True
+            else:
+                # 检查图片文件是否真的存在
+                image_path = IMAGES_DIR / artist['image_example']
+                if not image_path.exists():
+                    needs_fetch = True
+            
+            if needs_fetch:
+                name = artist.get('name_noob') or artist.get('name_nai') or 'Unknown'
+                artists_to_fetch.append({
+                    'id': artist['id'],
+                    'uuid': artist.get('uuid'),
+                    'danbooru_link': link,
+                    'name': name
+                })
+
+        # 3. 批量获取作品数据
+        fetched_count = 0
+        if artists_to_fetch:
+            logging.info(f"开始为 {len(artists_to_fetch)} 个画师获取作品数据...")
+            results = fetch_post_counts_batch(artists_to_fetch)
+            
+            for artist_id, result in results.items():
+                update_data = {}
+                if result.get('post_count') is not None:
+                    update_data['post_count'] = result['post_count']
+                if result.get('example_image'):
+                    update_data['image_example'] = result['example_image']
+                
+                if update_data:
+                    update_artist(artist_id, **update_data)
+                    fetched_count += 1
+                    details.append({
+                        "id": artist_id,
+                        "type": "fetch_data",
+                        "data": update_data
+                    })
+
+        total_updated = updated_count + fetched_count
+        message = f"已自动补全 {updated_count} 个画师的基本信息"
+        if fetched_count > 0:
+            message += f"，并成功获取了 {fetched_count} 个画师的作品数据"
+        elif len(artists_to_fetch) > 0:
+            message += f"，尝试获取 {len(artists_to_fetch)} 个画师的作品数据但未成功"
 
         return jsonify({
             "success": True,
             "data": {
-                "updated_count": updated_count,
+                "updated_count": total_updated,
                 "details": details
             },
-            "message": f"已自动补全 {updated_count} 个画师的信息"
+            "message": message
         })
     except Exception as e:
         logging.error(f"一键补全失败: {e}")
