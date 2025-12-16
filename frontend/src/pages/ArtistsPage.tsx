@@ -65,7 +65,9 @@ import {
   type Artist,
   type Category,
   type CreateArtistData,
+  type AutoCompleteProgress,
 } from '@/lib/api'
+import { Progress } from '@/components/ui/progress'
 
 const API_BASE = '/api'
 
@@ -90,6 +92,23 @@ export default function ArtistsPage() {
     origin: { x: number; y: number }
   } | null>(null)
   const [formLoading, setFormLoading] = useState(false)
+
+  // Auto-complete progress state
+  const [autoCompleteProgress, setAutoCompleteProgress] = useState<{
+    isOpen: boolean
+    phase: 'names' | 'fetch' | ''
+    current: number
+    total: number
+    artistName: string
+    message: string
+  }>({
+    isOpen: false,
+    phase: '',
+    current: 0,
+    total: 0,
+    artistName: '',
+    message: '',
+  })
 
   // Form states
   const [simpleAddName, setSimpleAddName] = useState('')
@@ -760,23 +779,62 @@ export default function ArtistsPage() {
         </Button>
         <Button
           variant="outline"
-          onClick={async () => {
+          onClick={() => {
             if (!confirm('确定要对所有画师进行自动数据补全吗？这可能需要一些时间。')) return
-            setLoading(true)
-            try {
-              const res = await toolsApi.autoCompleteAll()
-              if (res.success) {
-                alert(res.message)
+
+            // 打开进度弹窗
+            setAutoCompleteProgress({
+              isOpen: true,
+              phase: 'names',
+              current: 0,
+              total: 0,
+              artistName: '准备中...',
+              message: '正在初始化...',
+            })
+
+            // 使用流式API
+            toolsApi.autoCompleteAllStream((data: AutoCompleteProgress) => {
+              if (data.type === 'start') {
+                setAutoCompleteProgress((prev) => ({
+                  ...prev,
+                  total: data.total || 0,
+                  message: `共 ${data.total} 个画师`,
+                }))
+              } else if (data.type === 'progress') {
+                setAutoCompleteProgress((prev) => ({
+                  ...prev,
+                  phase: data.phase || prev.phase,
+                  current: data.current || 0,
+                  total: data.total || prev.total,
+                  artistName: data.artist_name || '',
+                  message:
+                    data.phase === 'names'
+                      ? `正在补全名称信息 (${data.current}/${data.total})`
+                      : `正在获取作品数据 (${data.current}/${data.total})`,
+                }))
+              } else if (data.type === 'phase') {
+                setAutoCompleteProgress((prev) => ({
+                  ...prev,
+                  phase: data.phase || prev.phase,
+                  current: 0,
+                  total: data.total || 0,
+                  message: data.message || '',
+                }))
+              } else if (data.type === 'complete') {
+                setAutoCompleteProgress((prev) => ({
+                  ...prev,
+                  isOpen: false,
+                }))
+                alert(data.message || '补全完成')
                 loadData()
-              } else {
-                alert(res.error || '补全失败')
+              } else if (data.type === 'error') {
+                setAutoCompleteProgress((prev) => ({
+                  ...prev,
+                  isOpen: false,
+                }))
+                alert(data.error || '补全失败')
               }
-            } catch (error) {
-              console.error('Auto complete all failed:', error)
-              alert('补全失败')
-            } finally {
-              setLoading(false)
-            }
+            })
           }}
           className="gap-2"
         >
@@ -1172,6 +1230,82 @@ export default function ArtistsPage() {
               }}
             />
           </div>
+        )}
+      </AnimatePresence>
+
+      {/* 自动补全进度弹窗 */}
+      <AnimatePresence>
+        {autoCompleteProgress.isOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="bg-card border border-border rounded-xl shadow-2xl p-6 w-[400px] max-w-[90vw]"
+            >
+              {/* 标题 */}
+              <div className="flex items-center gap-3 mb-6">
+                <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
+                  <Sparkles className="h-5 w-5 text-primary animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-lg text-foreground">
+                    自动补全中
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    {autoCompleteProgress.phase === 'names'
+                      ? '阶段 1/2: 补全名称信息'
+                      : autoCompleteProgress.phase === 'fetch'
+                        ? '阶段 2/2: 获取作品数据'
+                        : '准备中...'}
+                  </p>
+                </div>
+              </div>
+
+              {/* 当前处理的画师 */}
+              <div className="mb-4">
+                <p className="text-sm text-muted-foreground mb-1">当前画师</p>
+                <p className="font-medium text-foreground truncate">
+                  {autoCompleteProgress.artistName || '-'}
+                </p>
+              </div>
+
+              {/* 进度条 */}
+              <div className="mb-4">
+                <div className="flex justify-between text-sm mb-2">
+                  <span className="text-muted-foreground">
+                    {autoCompleteProgress.message}
+                  </span>
+                  <span className="text-foreground font-medium">
+                    {autoCompleteProgress.total > 0
+                      ? `${Math.round((autoCompleteProgress.current / autoCompleteProgress.total) * 100)}%`
+                      : '0%'}
+                  </span>
+                </div>
+                <Progress
+                  value={
+                    autoCompleteProgress.total > 0
+                      ? (autoCompleteProgress.current / autoCompleteProgress.total) * 100
+                      : 0
+                  }
+                  className="h-2"
+                />
+              </div>
+
+              {/* 详细进度 */}
+              <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span>
+                  {autoCompleteProgress.current} / {autoCompleteProgress.total}
+                </span>
+              </div>
+            </motion.div>
+          </motion.div>
         )}
       </AnimatePresence>
 

@@ -2,7 +2,7 @@
 Flask 后端 API 服务
 适配 React 前端的前后端分离架构
 """
-from flask import Flask, request, jsonify, send_from_directory, session, send_file
+from flask import Flask, request, jsonify, send_from_directory, session, send_file, Response
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from functools import wraps
@@ -478,122 +478,143 @@ def api_auto_complete():
         logging.error(f"自动补全失败: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/tools/auto-complete-all', methods=['POST'])
+@app.route('/api/tools/auto-complete-all-stream', methods=['GET'])
 @login_required
-def api_auto_complete_all():
-    """一键补全所有画师数据（名称、链接、作品数、示例图）"""
-    try:
-        artists = get_all_artists()
-        updated_count = 0
-        details = []
-        
-        # 1. 补全名称和链接
-        for artist in artists:
-            artist_id = artist['id']
-            name_noob = artist.get('name_noob', '')
-            name_nai = artist.get('name_nai', '')
-            danbooru_link = artist.get('danbooru_link', '')
+def api_auto_complete_all_stream():
+    """一键补全所有画师数据（SSE流式响应，带进度）"""
+    def get_display_name(artist):
+        """获取显示名称：优先使用NAI格式并去除artist:前缀，去除转义字符"""
+        name = artist.get('name_nai') or artist.get('name_noob') or '未命名'
+        # 去除 artist: 前缀
+        if name.startswith('artist:'):
+            name = name[7:]
+        # 去除 NOOB 格式的括号转义
+        name = name.replace('\\(', '(').replace('\\)', ')')
+        return name
 
-            new_noob, new_nai, new_link = auto_complete_names(name_noob, name_nai, danbooru_link)
+    def generate():
+        try:
+            artists = get_all_artists()
+            total_artists = len(artists)
+            updated_count = 0
 
-            # 检查是否有变更
-            if (new_noob != name_noob or
-                new_nai != name_nai or
-                new_link != danbooru_link):
-                
-                update_artist(
-                    artist_id,
-                    name_noob=new_noob,
-                    name_nai=new_nai,
-                    danbooru_link=new_link
-                )
-                updated_count += 1
-                details.append({
-                    "id": artist_id,
-                    "name_noob": new_noob,
-                    "name_nai": new_nai,
-                    "danbooru_link": new_link,
-                    "type": "basic_info"
-                })
-                # 更新内存中的对象，以便后续步骤使用最新链接
-                artist['name_noob'] = new_noob
-                artist['name_nai'] = new_nai
-                artist['danbooru_link'] = new_link
+            # 发送初始状态
+            yield f"data: {json.dumps({'type': 'start', 'total': total_artists})}\n\n"
 
-        # 2. 筛选需要获取作品数据的画师
-        # 条件：有链接 且 未跳过 且 (作品数为空 或 没有示例图)
-        artists_to_fetch = []
-        for artist in artists:
-            if artist.get('skip_danbooru'):
-                continue
-                
-            link = artist.get('danbooru_link')
-            if not link:
-                continue
-                
-            needs_fetch = False
-            # 检查作品数
-            if artist.get('post_count') is None or artist.get('post_count') == 0:
-                needs_fetch = True
-            
-            # 检查示例图
-            if not artist.get('image_example'):
-                needs_fetch = True
-            else:
-                # 检查图片文件是否真的存在
-                image_path = IMAGES_DIR / artist['image_example']
-                if not image_path.exists():
+            # 1. 补全名称和链接
+            for idx, artist in enumerate(artists):
+                artist_id = artist['id']
+                name_noob = artist.get('name_noob', '')
+                name_nai = artist.get('name_nai', '')
+                danbooru_link = artist.get('danbooru_link', '')
+                display_name = get_display_name(artist)
+
+                new_noob, new_nai, new_link = auto_complete_names(name_noob, name_nai, danbooru_link)
+
+                # 检查是否有变更
+                if (new_noob != name_noob or
+                    new_nai != name_nai or
+                    new_link != danbooru_link):
+
+                    update_artist(
+                        artist_id,
+                        name_noob=new_noob,
+                        name_nai=new_nai,
+                        danbooru_link=new_link
+                    )
+                    updated_count += 1
+                    # 更新内存中的对象
+                    artist['name_noob'] = new_noob
+                    artist['name_nai'] = new_nai
+                    artist['danbooru_link'] = new_link
+
+                # 发送进度 - 阶段1：名称补全
+                yield f"data: {json.dumps({'type': 'progress', 'phase': 'names', 'current': idx + 1, 'total': total_artists, 'artist_name': display_name, 'updated_count': updated_count})}\n\n"
+
+            # 2. 筛选需要获取作品数据的画师
+            artists_to_fetch = []
+            for artist in artists:
+                if artist.get('skip_danbooru'):
+                    continue
+
+                link = artist.get('danbooru_link')
+                if not link:
+                    continue
+
+                needs_fetch = False
+                if artist.get('post_count') is None or artist.get('post_count') == 0:
                     needs_fetch = True
-            
-            if needs_fetch:
-                name = artist.get('name_noob') or artist.get('name_nai') or 'Unknown'
-                artists_to_fetch.append({
-                    'id': artist['id'],
-                    'uuid': artist.get('uuid'),
-                    'danbooru_link': link,
-                    'name': name
-                })
 
-        # 3. 批量获取作品数据
-        fetched_count = 0
-        if artists_to_fetch:
-            logging.info(f"开始为 {len(artists_to_fetch)} 个画师获取作品数据...")
-            results = fetch_post_counts_batch(artists_to_fetch)
-            
-            for artist_id, result in results.items():
-                update_data = {}
-                if result.get('post_count') is not None:
-                    update_data['post_count'] = result['post_count']
-                if result.get('example_image'):
-                    update_data['image_example'] = result['example_image']
-                
-                if update_data:
-                    update_artist(artist_id, **update_data)
-                    fetched_count += 1
-                    details.append({
-                        "id": artist_id,
-                        "type": "fetch_data",
-                        "data": update_data
+                if not artist.get('image_example'):
+                    needs_fetch = True
+                else:
+                    image_path = IMAGES_DIR / artist['image_example']
+                    if not image_path.exists():
+                        needs_fetch = True
+
+                if needs_fetch:
+                    artists_to_fetch.append({
+                        'id': artist['id'],
+                        'uuid': artist.get('uuid'),
+                        'danbooru_link': link,
+                        'name': get_display_name(artist)
                     })
 
-        total_updated = updated_count + fetched_count
-        message = f"已自动补全 {updated_count} 个画师的基本信息"
-        if fetched_count > 0:
-            message += f"，并成功获取了 {fetched_count} 个画师的作品数据"
-        elif len(artists_to_fetch) > 0:
-            message += f"，尝试获取 {len(artists_to_fetch)} 个画师的作品数据但未成功"
+            # 发送阶段2开始信息
+            yield f"data: {json.dumps({'type': 'phase', 'phase': 'fetch', 'total': len(artists_to_fetch), 'message': f'开始获取 {len(artists_to_fetch)} 个画师的作品数据...'})}\n\n"
 
-        return jsonify({
-            "success": True,
-            "data": {
-                "updated_count": total_updated,
-                "details": details
-            },
-            "message": message
-        })
-    except Exception as e:
-        logging.error(f"一键补全失败: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+            # 3. 逐个获取作品数据（使用流式版本）
+            fetched_count = 0
+            image_failed_count = 0
+            image_failed_artists = []
+
+            if artists_to_fetch:
+                from utils import fetch_post_counts_streaming
+
+                for progress in fetch_post_counts_streaming(artists_to_fetch):
+                    if progress['type'] == 'progress':
+                        # 发送获取进度
+                        yield f"data: {json.dumps({'type': 'progress', 'phase': 'fetch', 'current': progress['current'], 'total': progress['total'], 'artist_name': progress['artist_name']})}\n\n"
+                    elif progress['type'] == 'result':
+                        artist_id = progress['artist_id']
+                        result = progress['result']
+                        update_data = {}
+
+                        if result.get('post_count') is not None:
+                            update_data['post_count'] = result['post_count']
+                        if result.get('example_image'):
+                            update_data['image_example'] = result['example_image']
+
+                        if update_data:
+                            update_artist(artist_id, **update_data)
+                            fetched_count += 1
+
+                            if result.get('post_count') is not None and not result.get('example_image'):
+                                image_failed_count += 1
+                                image_failed_artists.append(progress['artist_name'])
+
+            # 构建最终消息
+            message = f"已自动补全 {updated_count} 个画师的基本信息"
+            if fetched_count > 0:
+                message += f"，并成功获取了 {fetched_count} 个画师的作品数据"
+            elif len(artists_to_fetch) > 0:
+                message += f"，尝试获取 {len(artists_to_fetch)} 个画师的作品数据但未成功"
+
+            if image_failed_count > 0:
+                message += f"（其中 {image_failed_count} 个画师封面获取失败）"
+
+            # 发送完成状态
+            yield f"data: {json.dumps({'type': 'complete', 'message': message, 'updated_count': updated_count, 'fetched_count': fetched_count, 'image_failed_count': image_failed_count, 'image_failed_artists': image_failed_artists})}\n\n"
+
+        except Exception as e:
+            logging.error(f"一键补全失败: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream', headers={
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no'
+    })
 
 @app.route('/api/tools/fetch-post-counts', methods=['POST'])
 @login_required
@@ -870,15 +891,18 @@ def api_import_excel():
 
                 category_ids.append(category_map[category_name])
 
-            # 创建画师
+            # 创建画师（处理空值，避免 NaN 转成 'nan' 字符串）
+            def safe_str(val):
+                return str(val) if pd.notna(val) else ''
+
             create_artist(
                 category_ids=category_ids,
-                name_noob=str(row.get('画师名称-NOOB', '')),
-                name_nai=str(row.get('画师名称-NAI', '')),
-                danbooru_link=str(row.get('Danbooru链接', '')),
+                name_noob=safe_str(row.get('画师名称-NOOB', '')),
+                name_nai=safe_str(row.get('画师名称-NAI', '')),
+                danbooru_link=safe_str(row.get('Danbooru链接', '')),
                 post_count=int(row['统计']) if pd.notna(row.get('统计')) else None,
-                notes=str(row.get('备注', '')),
-                image_example=str(row.get('图例', ''))
+                notes=safe_str(row.get('备注', '')),
+                image_example=safe_str(row.get('图例', ''))
             )
             imported_count += 1
 

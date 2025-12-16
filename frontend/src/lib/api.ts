@@ -142,6 +142,20 @@ export const artistApi = {
 }
 
 // 工具相关
+export interface AutoCompleteProgress {
+  type: 'start' | 'progress' | 'phase' | 'complete' | 'error'
+  phase?: 'names' | 'fetch'
+  current?: number
+  total?: number
+  artist_name?: string
+  updated_count?: number
+  fetched_count?: number
+  image_failed_count?: number
+  image_failed_artists?: string[]
+  message?: string
+  error?: string
+}
+
 export const toolsApi = {
   autoComplete: (name_noob: string, name_nai: string, danbooru_link: string) =>
     request<{ name_noob: string; name_nai: string; danbooru_link: string }>(
@@ -152,18 +166,34 @@ export const toolsApi = {
       }
     ),
 
-  autoCompleteAll: () =>
-    request<{
-      updated_count: number
-      details: Array<{
-        id: number
-        name_noob: string
-        name_nai: string
-        danbooru_link: string
-      }>
-    }>('/tools/auto-complete-all', {
-      method: 'POST',
-    }),
+  // SSE 流式自动补全
+  autoCompleteAllStream: (onProgress: (data: AutoCompleteProgress) => void): (() => void) => {
+    const eventSource = new EventSource(`${API_BASE}/tools/auto-complete-all-stream`, {
+      withCredentials: true,
+    })
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as AutoCompleteProgress
+        onProgress(data)
+
+        // 完成或错误时关闭连接
+        if (data.type === 'complete' || data.type === 'error') {
+          eventSource.close()
+        }
+      } catch (e) {
+        console.error('Failed to parse SSE data:', e)
+      }
+    }
+
+    eventSource.onerror = () => {
+      eventSource.close()
+      onProgress({ type: 'error', error: '连接中断' })
+    }
+
+    // 返回关闭函数
+    return () => eventSource.close()
+  },
 
   fetchPostCounts: (artist_ids: number[]) =>
     request<Record<number, { post_count: number; example_image: string }>>(

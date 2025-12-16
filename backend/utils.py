@@ -453,3 +453,82 @@ def get_artists_without_images(artists: list) -> list:
             missing_ids.append(artist_id)
 
     return missing_ids
+
+
+def fetch_post_counts_streaming(artists: list):
+    """
+    流式批量获取画师作品数量和示例图（生成器版本，用于SSE）
+    artists: 列表,每个元素是字典 {'id': ..., 'uuid': ..., 'danbooru_link': ..., 'name': ...}
+    生成: {'type': 'progress', ...} 或 {'type': 'result', ...}
+    """
+    total = len(artists)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+            locale='en-US',
+            timezone_id="Asia/Shanghai",
+            viewport={"width": 1920, "height": 1080},
+            device_scale_factor=1,
+            is_mobile=False,
+            has_touch=False,
+            extra_http_headers={
+                "Accept": "*/*",
+                "Accept-Encoding": "gzip, deflate, br, zstd",
+                "Accept-Language": "en-US,en;q=0.9",
+                "DNT": "1",
+                "Priority": "u=1, i",
+                "Sec-CH-UA": '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
+                "Sec-CH-UA-Mobile": "?0",
+                "Sec-CH-UA-Platform": '"Windows"',
+            }
+        )
+        context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => false,
+            });
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3],
+            });
+        """)
+
+        page = context.new_page()
+        page.set_default_timeout(60000)
+        page.set_default_navigation_timeout(60000)
+
+        for idx, artist in enumerate(artists):
+            artist_id = artist['id']
+            artist_identifier = artist.get('uuid') or str(artist_id)
+            url = artist.get('danbooru_link', '')
+            name = artist.get('name', 'Unknown')
+
+            # 发送进度
+            yield {
+                'type': 'progress',
+                'current': idx + 1,
+                'total': total,
+                'artist_name': name
+            }
+
+            if not url or not url.strip():
+                continue
+
+            logging.info(f"正在获取画师 {name} 的数据...")
+            result = get_post_count_and_image(page, url, artist_identifier, name)
+
+            # 发送结果
+            if result['post_count'] is not None:
+                yield {
+                    'type': 'result',
+                    'artist_id': artist_id,
+                    'artist_name': name,
+                    'result': result
+                }
+                logging.info(f"画师 {name} - 作品数量: {result['post_count']}, 示例图: {result['example_image'] or 'None'}")
+            else:
+                logging.warning(f"未能获取画师 {name} 的数据")
+
+            time.sleep(1)
+
+        browser.close()
