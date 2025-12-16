@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# 环境配置
+.env
+
+# 数据库
+*.db
+
+# 图片目录（保留目录但不提交图片）
+artist_images/*
+!artist_images/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Flask
+flask_session/
+instance/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
