@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg
+*.egg-info/
+dist/
+build/
+
+# 环境变量和敏感配置
+.env
+
+# 数据库
+*.db
+*.sqlite
+*.sqlite3
+
+# 图片和媒体文件
+artist_images/
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
+
+# 日志文件
+*.log
+
+# IDE和编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Flask session
+flask_session/
+
+# 临时文件
+*.tmp
+*.bak
+*.cache
+
+# Excel文件
+*.xlsx
+*.xls
+~$*.xlsx
+~$*.xls
+
+# 测试文件
+.pytest_cache/
+.coverage
+htmlcov/
