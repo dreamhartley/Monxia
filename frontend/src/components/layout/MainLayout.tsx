@@ -9,12 +9,10 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
-  User,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Separator } from '@/components/ui/separator'
 import {
   Tooltip,
   TooltipContent,
@@ -37,7 +35,7 @@ const navItems = [
 
 export function MainLayout({ children }: MainLayoutProps) {
   const [collapsed, setCollapsed] = useState(false)
-  const { username, logout } = useAuth()
+  const { logout } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
 
@@ -135,23 +133,6 @@ export function MainLayout({ children }: MainLayoutProps) {
 
           {/* 底部用户区域 */}
           <div className="border-t border-border/50 p-2">
-            <Separator className="mb-2" />
-            <div
-              className={cn(
-                'flex items-center gap-3 p-2 rounded-lg',
-                collapsed ? 'justify-center' : ''
-              )}
-            >
-              <div className="h-9 w-9 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-                <User className="h-4 w-4 text-primary" />
-              </div>
-              {!collapsed && (
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium truncate">{username}</p>
-                  <p className="text-xs text-muted-foreground">管理员</p>
-                </div>
-              )}
-            </div>
             {collapsed ? (
               <Tooltip>
                 <TooltipTrigger asChild>
