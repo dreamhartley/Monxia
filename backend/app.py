@@ -152,9 +152,9 @@ def api_logout():
 def api_check_auth():
     """检查登录状态"""
     if session.get('logged_in'):
-        return jsonify({"success": True, "logged_in": True, "username": session.get('username')})
+        return jsonify({"success": True, "data": {"logged_in": True, "username": session.get('username')}})
     else:
-        return jsonify({"success": True, "logged_in": False})
+        return jsonify({"success": True, "data": {"logged_in": False}})
 
 # -------------------------------
 # 分类管理 API
