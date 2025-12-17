@@ -69,10 +69,10 @@ export const categoryApi = {
       body: JSON.stringify({ name, display_order }),
     }),
 
-  update: (id: number, name: string, display_order: number) =>
+  update: (id: number, name: string, display_order?: number) =>
     request<Category>(`/categories/${id}`, {
       method: 'PUT',
-      body: JSON.stringify({ name, display_order }),
+      body: JSON.stringify({ name, ...(display_order !== undefined && { display_order }) }),
     }),
 
   delete: (id: number) =>

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import {
   Plus,
   Edit,
@@ -6,6 +6,8 @@ import {
   Loader2,
   Tags,
   AlertCircle,
+  GripVertical,
+  ArrowUpDown,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -36,6 +38,14 @@ export default function CategoriesPage() {
   const [categories, setCategories] = useState<Category[]>([])
   const [loading, setLoading] = useState(true)
 
+  // 排序状态
+  const [categoryOrder, setCategoryOrder] = useState<number[]>(() => {
+    const saved = localStorage.getItem('category_order')
+    return saved ? JSON.parse(saved) : []
+  })
+  const [draggedCategoryId, setDraggedCategoryId] = useState<number | null>(null)
+  const [isSortDialogOpen, setIsSortDialogOpen] = useState(false)
+
   // Dialog states
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false)
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false)
@@ -46,8 +56,84 @@ export default function CategoriesPage() {
   // Form states
   const [formData, setFormData] = useState({
     name: '',
-    display_order: 0,
   })
+
+  // 根据本地排序顺序排列分类
+  const sortedCategories = useMemo(() => {
+    // "未分类"始终排在最前面
+    const uncategorized = categories.find(c => c.name === '未分类')
+    const otherCategories = categories.filter(c => c.name !== '未分类')
+
+    let sortedOthers: Category[]
+    if (categoryOrder.length === 0) {
+      sortedOthers = otherCategories
+    } else {
+      // 按照 categoryOrder 排序，不在 order 中的放最后
+      sortedOthers = [...otherCategories].sort((a, b) => {
+        const indexA = categoryOrder.indexOf(a.id)
+        const indexB = categoryOrder.indexOf(b.id)
+        if (indexA === -1 && indexB === -1) return 0
+        if (indexA === -1) return 1
+        if (indexB === -1) return -1
+        return indexA - indexB
+      })
+    }
+
+    return uncategorized ? [uncategorized, ...sortedOthers] : sortedOthers
+  }, [categories, categoryOrder])
+
+  // 可排序的分类（不包含"未分类"）
+  const sortableCategories = useMemo(() => {
+    return sortedCategories.filter(c => c.name !== '未分类')
+  }, [sortedCategories])
+
+  // 保存分类排序到 localStorage
+  const saveCategoryOrder = (newOrder: number[]) => {
+    setCategoryOrder(newOrder)
+    localStorage.setItem('category_order', JSON.stringify(newOrder))
+  }
+
+  // 拖拽排序处理
+  const handleDragStart = (e: React.DragEvent, categoryId: number) => {
+    setDraggedCategoryId(categoryId)
+    e.dataTransfer.effectAllowed = 'move'
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+  }
+
+  const handleDrop = (e: React.DragEvent, targetCategoryId: number) => {
+    e.preventDefault()
+    if (draggedCategoryId === null || draggedCategoryId === targetCategoryId) {
+      setDraggedCategoryId(null)
+      return
+    }
+
+    const currentOrder = categoryOrder.length > 0
+      ? categoryOrder
+      : categories.map(c => c.id)
+
+    const draggedIndex = currentOrder.indexOf(draggedCategoryId)
+    const targetIndex = currentOrder.indexOf(targetCategoryId)
+
+    if (draggedIndex === -1 || targetIndex === -1) {
+      setDraggedCategoryId(null)
+      return
+    }
+
+    const newOrder = [...currentOrder]
+    newOrder.splice(draggedIndex, 1)
+    newOrder.splice(targetIndex, 0, draggedCategoryId)
+
+    saveCategoryOrder(newOrder)
+    setDraggedCategoryId(null)
+  }
+
+  const handleDragEnd = () => {
+    setDraggedCategoryId(null)
+  }
 
   useEffect(() => {
     loadCategories()
@@ -68,7 +154,7 @@ export default function CategoriesPage() {
   }
 
   const resetForm = () => {
-    setFormData({ name: '', display_order: categories.length })
+    setFormData({ name: '' })
   }
 
   const handleAddCategory = async () => {
@@ -79,7 +165,7 @@ export default function CategoriesPage() {
 
     setFormLoading(true)
     try {
-      const res = await categoryApi.create(formData.name, formData.display_order)
+      const res = await categoryApi.create(formData.name)
       if (res.success) {
         await loadCategories()
         setIsAddDialogOpen(false)
@@ -102,8 +188,7 @@ export default function CategoriesPage() {
     try {
       const res = await categoryApi.update(
         currentCategory.id,
-        formData.name,
-        formData.display_order
+        formData.name
       )
       if (res.success) {
         await loadCategories()
@@ -146,7 +231,6 @@ export default function CategoriesPage() {
     setCurrentCategory(category)
     setFormData({
       name: category.name,
-      display_order: category.display_order,
     })
     setIsEditDialogOpen(true)
   }
@@ -184,8 +268,26 @@ export default function CategoriesPage() {
             <p className="text-sm">点击上方按钮添加第一个分类</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 max-w-5xl">
-            {categories.map((category) => (
+          <div className="max-w-5xl">
+            {/* 工具栏 */}
+            <div className="flex items-center justify-between mb-4">
+              <span className="text-sm text-muted-foreground">
+                共 {categories.length} 个分类
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={() => setIsSortDialogOpen(true)}
+              >
+                <ArrowUpDown className="h-4 w-4" />
+                调整排序
+              </Button>
+            </div>
+
+            {/* 分类卡片 */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {sortedCategories.map((category) => (
               <Card
                 key={category.id}
                 className="group bg-card/80 backdrop-blur-sm border-border/50 hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5 transition-all duration-300"
@@ -196,12 +298,7 @@ export default function CategoriesPage() {
                       <div className="p-2 rounded-lg bg-primary/10">
                         <Tags className="h-5 w-5 text-primary" />
                       </div>
-                      <div>
-                        <CardTitle className="text-lg">{category.name}</CardTitle>
-                        <p className="text-sm text-muted-foreground">
-                          排序: {category.display_order}
-                        </p>
-                      </div>
+                      <CardTitle className="text-lg">{category.name}</CardTitle>
                     </div>
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <Button
@@ -236,6 +333,7 @@ export default function CategoriesPage() {
                 </CardContent>
               </Card>
             ))}
+            </div>
           </div>
         )}
       </ScrollArea>
@@ -256,21 +354,6 @@ export default function CategoriesPage() {
                 value={formData.name}
                 onChange={(e) =>
                   setFormData((prev) => ({ ...prev, name: e.target.value }))
-                }
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="display_order">显示顺序</Label>
-              <Input
-                id="display_order"
-                type="number"
-                placeholder="0"
-                value={formData.display_order}
-                onChange={(e) =>
-                  setFormData((prev) => ({
-                    ...prev,
-                    display_order: parseInt(e.target.value) || 0,
-                  }))
                 }
               />
             </div>
@@ -308,20 +391,6 @@ export default function CategoriesPage() {
                 value={formData.name}
                 onChange={(e) =>
                   setFormData((prev) => ({ ...prev, name: e.target.value }))
-                }
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="edit_display_order">显示顺序</Label>
-              <Input
-                id="edit_display_order"
-                type="number"
-                value={formData.display_order}
-                onChange={(e) =>
-                  setFormData((prev) => ({
-                    ...prev,
-                    display_order: parseInt(e.target.value) || 0,
-                  }))
                 }
               />
             </div>
@@ -374,6 +443,43 @@ export default function CategoriesPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* 分类排序弹窗 */}
+      <Dialog open={isSortDialogOpen} onOpenChange={setIsSortDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>调整分类排序</DialogTitle>
+            <DialogDescription>
+              拖拽分类来调整显示顺序，排序会同步到画师管理页面
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <div className="space-y-1 max-h-[300px] overflow-y-auto">
+              {sortableCategories.map((cat) => (
+                <div
+                  key={cat.id}
+                  draggable
+                  onDragStart={(e) => handleDragStart(e, cat.id)}
+                  onDragOver={handleDragOver}
+                  onDrop={(e) => handleDrop(e, cat.id)}
+                  onDragEnd={handleDragEnd}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-md cursor-grab bg-secondary/30 hover:bg-secondary/50 transition-colors ${
+                    draggedCategoryId === cat.id ? 'opacity-50' : ''
+                  }`}
+                >
+                  <GripVertical className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm flex-1">{cat.name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsSortDialogOpen(false)}>
+              完成
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

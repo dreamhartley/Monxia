@@ -92,6 +92,21 @@ export default function ArtistsPage() {
     const saved = localStorage.getItem('artist_favorites')
     return saved ? new Set(JSON.parse(saved)) : new Set()
   })
+  const [categoryOrder, setCategoryOrder] = useState<number[]>(() => {
+    const saved = localStorage.getItem('category_order')
+    return saved ? JSON.parse(saved) : []
+  })
+
+  // 监听 localStorage 变化（从 CategoriesPage 同步排序）
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'category_order' && e.newValue) {
+        setCategoryOrder(JSON.parse(e.newValue))
+      }
+    }
+    window.addEventListener('storage', handleStorageChange)
+    return () => window.removeEventListener('storage', handleStorageChange)
+  }, [])
 
   // Dialog states
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false)
@@ -151,6 +166,30 @@ export default function ArtistsPage() {
       return newFavorites
     })
   }
+
+  // 根据本地排序顺序排列分类
+  const sortedCategories = useMemo(() => {
+    // "未分类"始终排在最前面
+    const uncategorized = categories.find(c => c.name === '未分类')
+    const otherCategories = categories.filter(c => c.name !== '未分类')
+
+    let sortedOthers: Category[]
+    if (categoryOrder.length === 0) {
+      sortedOthers = otherCategories
+    } else {
+      // 按照 categoryOrder 排序，不在 order 中的放最后
+      sortedOthers = [...otherCategories].sort((a, b) => {
+        const indexA = categoryOrder.indexOf(a.id)
+        const indexB = categoryOrder.indexOf(b.id)
+        if (indexA === -1 && indexB === -1) return 0
+        if (indexA === -1) return 1
+        if (indexB === -1) return -1
+        return indexA - indexB
+      })
+    }
+
+    return uncategorized ? [uncategorized, ...sortedOthers] : sortedOthers
+  }, [categories, categoryOrder])
 
   // Filtered artists
   const filteredArtists = useMemo(() => {
@@ -267,6 +306,33 @@ export default function ArtistsPage() {
       skip_danbooru: false,
     })
     setSimpleAddName('')
+  }
+
+  // 打开添加对话框
+  const openAddDialog = () => {
+    // 首先重置表单状态
+    setSimpleAddName('')
+
+    // 如果当前筛选选中了某个分类，自动添加该分类
+    let initialCategoryIds: number[] = []
+    if (selectedCategory !== 'all' && selectedCategory !== 'incomplete') {
+      const categoryId = parseInt(selectedCategory)
+      if (!isNaN(categoryId)) {
+        initialCategoryIds = [categoryId]
+      }
+    }
+
+    setFormData({
+      category_ids: initialCategoryIds,
+      name_noob: '',
+      name_nai: '',
+      danbooru_link: '',
+      post_count: undefined,
+      notes: '',
+      skip_danbooru: false,
+    })
+
+    setIsAddDialogOpen(true)
   }
 
   // 简化的添加流程
@@ -847,7 +913,7 @@ export default function ArtistsPage() {
           <h1 className="text-xl font-semibold text-foreground">画师管理</h1>
           <p className="text-sm text-muted-foreground">管理你的画师收藏库</p>
         </div>
-        <Button onClick={() => setIsAddDialogOpen(true)} className="gap-2">
+        <Button onClick={openAddDialog} className="gap-2">
           <Plus className="h-4 w-4" />
           添加画师
         </Button>
@@ -883,7 +949,7 @@ export default function ArtistsPage() {
           <SelectContent>
             <SelectItem value="all">全部分类</SelectItem>
             <SelectItem value="incomplete">待补全</SelectItem>
-            {categories.map((cat) => (
+            {sortedCategories.map((cat) => (
               <SelectItem key={cat.id} value={cat.id.toString()}>
                 {cat.name}
               </SelectItem>
@@ -1129,7 +1195,7 @@ export default function ArtistsPage() {
                       </Button>
                     </div>
                     <DropdownMenuSeparator />
-                    {categories
+                    {sortedCategories
                       .filter((cat) => !formData.category_ids.includes(cat.id))
                       .map((cat) => (
                         <SelectItem key={cat.id} value={cat.id.toString()}>
@@ -1161,23 +1227,28 @@ export default function ArtistsPage() {
             </div>
 
             {/* 跳过Danbooru */}
-            <div className="flex items-center space-x-2">
-              <Checkbox
-                id="add_skip_danbooru"
-                checked={formData.skip_danbooru}
-                onCheckedChange={(checked) =>
-                  setFormData((prev) => ({
-                    ...prev,
-                    skip_danbooru: checked as boolean,
-                  }))
-                }
-              />
-              <label
-                htmlFor="add_skip_danbooru"
-                className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
-              >
-                跳过 Danbooru 获取
-              </label>
+            <div className="space-y-1">
+              <div className="flex items-center space-x-2">
+                <Checkbox
+                  id="add_skip_danbooru"
+                  checked={formData.skip_danbooru}
+                  onCheckedChange={(checked) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      skip_danbooru: checked as boolean,
+                    }))
+                  }
+                />
+                <label
+                  htmlFor="add_skip_danbooru"
+                  className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
+                >
+                  跳过 Danbooru 获取
+                </label>
+              </div>
+              <p className="text-xs text-muted-foreground pl-6">
+                勾选后将不会自动从 Danbooru 获取作品数据和封面图片
+              </p>
             </div>
           </div>
           <DialogFooter>
@@ -1270,7 +1341,7 @@ export default function ArtistsPage() {
                       </Button>
                     </div>
                     <DropdownMenuSeparator />
-                    {categories
+                    {sortedCategories
                       .filter((cat) => !formData.category_ids.includes(cat.id))
                       .map((cat) => (
                         <SelectItem key={cat.id} value={cat.id.toString()}>
@@ -1352,18 +1423,23 @@ export default function ArtistsPage() {
             </div>
 
             {/* 跳过Danbooru */}
-            <label className="flex items-center space-x-2 cursor-pointer">
-              <Checkbox
-                checked={formData.skip_danbooru}
-                onCheckedChange={(checked) =>
-                  setFormData((prev) => ({
-                    ...prev,
-                    skip_danbooru: checked as boolean,
-                  }))
-                }
-              />
-              <span className="text-sm">跳过 Danbooru 获取</span>
-            </label>
+            <div className="space-y-1">
+              <label className="flex items-center space-x-2 cursor-pointer">
+                <Checkbox
+                  checked={formData.skip_danbooru}
+                  onCheckedChange={(checked) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      skip_danbooru: checked as boolean,
+                    }))
+                  }
+                />
+                <span className="text-sm">跳过 Danbooru 获取</span>
+              </label>
+              <p className="text-xs text-muted-foreground pl-6">
+                勾选后将不会自动从 Danbooru 获取作品数据和封面图片
+              </p>
+            </div>
           </div>
           <DialogFooter>
             <Button
