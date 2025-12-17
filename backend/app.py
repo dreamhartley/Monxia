@@ -6,41 +6,21 @@ from flask import Flask, request, jsonify, send_from_directory, session, Respons
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from functools import wraps
-import os
 import json
-import secrets
 from io import BytesIO
 from pathlib import Path
 import logging
 from PIL import Image
-from dotenv import load_dotenv
 
 logging.basicConfig(level=logging.INFO)
 
-# .env 文件路径
-ENV_FILE = Path(__file__).parent / '.env'
+from config_db import (
+    init_config_db, get_secret_key, get_admin_username,
+    verify_password, update_admin_credentials
+)
 
-def ensure_env_file():
-    """确保 .env 文件存在，如果不存在则自动创建"""
-    if not ENV_FILE.exists():
-        logging.info("未找到 .env 文件，正在自动生成...")
-        secret_key = secrets.token_hex(32)
-        env_content = f"""# 管理员账号配置
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=admin123
-
-# Flask密钥（用于session加密）
-SECRET_KEY={secret_key}
-"""
-        ENV_FILE.write_text(env_content, encoding='utf-8')
-        logging.info(f".env 文件已生成: {ENV_FILE}")
-        logging.warning("请修改 .env 文件中的默认密码！")
-
-# 确保 .env 文件存在
-ensure_env_file()
-
-# 加载.env配置
-load_dotenv(ENV_FILE)
+# 初始化配置数据库
+init_config_db()
 
 from database import (
     init_db, get_all_categories, create_category, update_category, get_all_artists,
@@ -55,8 +35,8 @@ from utils import (
 
 app = Flask(__name__)
 
-# 配置Flask
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
+# 配置Flask（使用数据库中的 SECRET_KEY）
+app.config['SECRET_KEY'] = get_secret_key()
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SECURE'] = True
@@ -76,13 +56,6 @@ CORS(app,
      ],
      allow_headers=['Content-Type', 'Authorization'],
      methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'])
-
-# 从环境变量读取管理员账号（必须通过 .env 配置）
-ADMIN_USERNAME = os.getenv('ADMIN_USERNAME')
-ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD')
-
-if not ADMIN_USERNAME or not ADMIN_PASSWORD:
-    raise RuntimeError("请在 .env 文件中配置 ADMIN_USERNAME 和 ADMIN_PASSWORD")
 
 # 每次请求时刷新 session，确保活跃用户不会被登出
 @app.before_request
@@ -129,7 +102,7 @@ def api_login():
         username = data.get('username', '')
         password = data.get('password', '')
 
-        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+        if verify_password(username, password):
             session.permanent = True  # 设置 session 为永久
             session['logged_in'] = True
             session['username'] = username
@@ -153,6 +126,47 @@ def api_check_auth():
         return jsonify({"success": True, "data": {"logged_in": True, "username": session.get('username')}})
     else:
         return jsonify({"success": True, "data": {"logged_in": False}})
+
+@app.route('/api/account/update', methods=['POST'])
+@login_required
+def api_update_account():
+    """修改管理员账户信息"""
+    try:
+        data = request.json
+        current_password = data.get('current_password', '')
+        new_username = data.get('new_username', '').strip() or None
+        new_password = data.get('new_password', '').strip() or None
+
+        if not current_password:
+            return jsonify({"success": False, "error": "请输入当前密码"}), 400
+
+        result = update_admin_credentials(
+            current_password=current_password,
+            new_username=new_username,
+            new_password=new_password
+        )
+
+        if result['success']:
+            # 如果用户名更新了，同时更新 session
+            if new_username:
+                session['username'] = new_username
+            return jsonify({"success": True, "message": result['message']})
+        else:
+            return jsonify({"success": False, "error": result['error']}), 400
+    except Exception as e:
+        logging.error(f"更新账户失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/account/info', methods=['GET'])
+@login_required
+def api_get_account_info():
+    """获取当前账户信息"""
+    try:
+        username = get_admin_username()
+        return jsonify({"success": True, "data": {"username": username}})
+    except Exception as e:
+        logging.error(f"获取账户信息失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 # -------------------------------
 # 分类管理 API

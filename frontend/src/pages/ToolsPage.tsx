@@ -18,7 +18,7 @@ export default function ToolsPage() {
             <Wrench className="h-8 w-8 text-muted-foreground" />
           </div>
           <div className="space-y-2">
-            <h2 className="text-lg font-medium text-foreground">工具功能开发中</h2>
+            <h2 className="text-lg font-medium text-foreground">功能开发中</h2>
             <p className="text-sm text-muted-foreground">
               更多实用工具即将推出，敬请期待
             </p>

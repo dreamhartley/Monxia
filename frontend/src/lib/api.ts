@@ -51,6 +51,21 @@ export const authApi = {
     request<{ logged_in: boolean; username?: string }>('/check-auth'),
 }
 
+// 账户管理相关
+export const accountApi = {
+  getInfo: () => request<{ username: string }>('/account/info'),
+
+  update: (data: {
+    current_password: string
+    new_username?: string
+    new_password?: string
+  }) =>
+    request<{ message: string }>('/account/update', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+}
+
 // 分类相关
 export interface Category {
   id: number
