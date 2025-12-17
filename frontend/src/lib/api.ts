@@ -263,3 +263,31 @@ export const presetApi = {
       method: 'DELETE',
     }),
 }
+
+// 登录背景图相关
+export interface BackgroundInfo {
+  has_custom: boolean
+  url: string | null
+}
+
+export const backgroundApi = {
+  // 获取当前背景图信息（不需要登录）
+  getInfo: () => request<BackgroundInfo>('/background'),
+
+  // 上传背景图
+  upload: (file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return fetch(`${API_BASE}/background/upload`, {
+      method: 'POST',
+      credentials: 'include',
+      body: formData,
+    }).then((res) => res.json())
+  },
+
+  // 删除自定义背景图
+  delete: () =>
+    request('/background', {
+      method: 'DELETE',
+    }),
+}

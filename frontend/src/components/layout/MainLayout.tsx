@@ -58,7 +58,7 @@ export function MainLayout({ children }: MainLayoutProps) {
           <div className="h-16 flex items-center justify-between px-4 border-b border-border/50">
             {!collapsed && (
               <h1 className="text-xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent whitespace-nowrap">
-                梦匣 Monxia
+                Monxia
               </h1>
             )}
             <Button

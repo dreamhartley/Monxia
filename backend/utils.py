@@ -14,9 +14,16 @@ from playwright.sync_api import sync_playwright, Page, Browser, BrowserContext
 
 logging.basicConfig(level=logging.INFO)
 
-# 图片存储目录（相对于 backend 目录）
-IMAGES_DIR = Path(__file__).parent / 'artist_images'
-IMAGES_DIR.mkdir(exist_ok=True)
+# 数据目录（支持通过环境变量配置，默认为 backend 目录）
+DATA_DIR = Path(os.environ.get('DATA_DIR', Path(__file__).parent))
+
+# 图片存储目录
+IMAGES_DIR = DATA_DIR / 'artist_images'
+IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+
+# 登录背景图存储目录
+BACKGROUNDS_DIR = DATA_DIR / 'backgrounds'
+BACKGROUNDS_DIR.mkdir(parents=True, exist_ok=True)
 
 # -------------------------------
 # 画师名称处理

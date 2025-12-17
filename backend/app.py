@@ -1,6 +1,7 @@
 """
 Flask 后端 API 服务
 适配 React 前端的前后端分离架构
+支持同时运行后端 API 和前端静态文件服务
 """
 from flask import Flask, request, jsonify, send_from_directory, session, Response
 from flask_cors import CORS
@@ -30,10 +31,13 @@ from database import (
 from utils import (
     auto_complete_names, format_noob, format_nai,
     generate_danbooru_link, fetch_post_counts_batch,
-    IMAGES_DIR
+    IMAGES_DIR, BACKGROUNDS_DIR
 )
 
-app = Flask(__name__)
+# 前端静态文件目录
+FRONTEND_DIST_DIR = Path(__file__).parent.parent / 'frontend' / 'dist'
+
+app = Flask(__name__, static_folder=str(FRONTEND_DIST_DIR), static_url_path='')
 
 # 配置Flask（使用数据库中的 SECRET_KEY）
 app.config['SECRET_KEY'] = get_secret_key()
@@ -89,6 +93,11 @@ init_db()
 def serve_image(filename):
     """提供画师示例图片"""
     return send_from_directory(IMAGES_DIR, filename)
+
+@app.route('/backgrounds/<path:filename>')
+def serve_background(filename):
+    """提供登录背景图片"""
+    return send_from_directory(BACKGROUNDS_DIR, filename)
 
 # -------------------------------
 # 认证 API
@@ -884,6 +893,101 @@ def api_delete_preset(preset_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 # -------------------------------
+# 登录背景图 API
+# -------------------------------
+
+@app.route('/api/background', methods=['GET'])
+def api_get_background():
+    """获取当前登录背景图信息（不需要登录）"""
+    try:
+        # 检查是否有自定义背景图
+        custom_bg = BACKGROUNDS_DIR / 'login_bg.jpg'
+        if custom_bg.exists():
+            return jsonify({
+                "success": True,
+                "data": {
+                    "has_custom": True,
+                    "url": "/backgrounds/login_bg.jpg"
+                }
+            })
+        else:
+            return jsonify({
+                "success": True,
+                "data": {
+                    "has_custom": False,
+                    "url": None
+                }
+            })
+    except Exception as e:
+        logging.error(f"获取背景图失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/background/upload', methods=['POST'])
+@login_required
+def api_upload_background():
+    """上传登录背景图"""
+    try:
+        if 'file' not in request.files:
+            return jsonify({"success": False, "error": "未上传文件"}), 400
+
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({"success": False, "error": "未选择文件"}), 400
+
+        if not allowed_file(file.filename):
+            return jsonify({"success": False, "error": "不支持的文件格式"}), 400
+
+        # 删除旧的背景图（如果存在）
+        old_bg = BACKGROUNDS_DIR / 'login_bg.jpg'
+        if old_bg.exists():
+            old_bg.unlink()
+            logging.info("删除旧背景图")
+
+        # 使用 Pillow 处理图片并保存为 JPEG
+        try:
+            file_content = file.read()
+            with Image.open(BytesIO(file_content)) as img:
+                # 转换为 RGB 模式
+                if img.mode in ('RGBA', 'P', 'LA'):
+                    img = img.convert('RGB')
+
+                # 保存为 JPEG，质量 85%
+                filepath = BACKGROUNDS_DIR / 'login_bg.jpg'
+                img.save(filepath, 'JPEG', quality=85, optimize=True)
+                logging.info("上传并保存背景图: login_bg.jpg")
+        except Exception as e:
+            logging.error(f"背景图处理失败: {e}")
+            return jsonify({"success": False, "error": "无效的图片文件"}), 400
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "url": "/backgrounds/login_bg.jpg"
+            },
+            "message": "背景图上传成功"
+        })
+
+    except Exception as e:
+        logging.error(f"上传背景图失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/background', methods=['DELETE'])
+@login_required
+def api_delete_background():
+    """删除自定义背景图，恢复默认"""
+    try:
+        custom_bg = BACKGROUNDS_DIR / 'login_bg.jpg'
+        if custom_bg.exists():
+            custom_bg.unlink()
+            logging.info("删除自定义背景图")
+            return jsonify({"success": True, "message": "已恢复默认背景"})
+        else:
+            return jsonify({"success": True, "message": "当前已是默认背景"})
+    except Exception as e:
+        logging.error(f"删除背景图失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# -------------------------------
 # 健康检查
 # -------------------------------
 
@@ -891,6 +995,37 @@ def api_delete_preset(preset_id):
 def api_health():
     """健康检查接口"""
     return jsonify({"success": True, "message": "API is running"})
+
+# -------------------------------
+# 前端静态文件服务
+# -------------------------------
+
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def serve_frontend(path):
+    """
+    提供前端静态文件服务
+    - 如果请求的是静态文件（存在于 dist 目录），直接返回
+    - 否则返回 index.html（支持 SPA 前端路由）
+    """
+    # 排除 API 路由、图片和背景图
+    if path.startswith('api/') or path.startswith('images/') or path.startswith('backgrounds/'):
+        return jsonify({"success": False, "error": "Not found"}), 404
+
+    # 检查文件是否存在
+    file_path = FRONTEND_DIST_DIR / path
+    if path and file_path.exists() and file_path.is_file():
+        return send_from_directory(FRONTEND_DIST_DIR, path)
+
+    # 返回 index.html（SPA 路由支持）
+    index_path = FRONTEND_DIST_DIR / 'index.html'
+    if index_path.exists():
+        return send_from_directory(FRONTEND_DIST_DIR, 'index.html')
+    else:
+        return jsonify({
+            "success": False,
+            "error": "前端文件未找到，请先构建前端: cd frontend && npm run build"
+        }), 404
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)

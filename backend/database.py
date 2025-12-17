@@ -3,12 +3,14 @@
 """
 import sqlite3
 import uuid
+import os
 from contextlib import contextmanager
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
-# 数据库文件路径（相对于 backend 目录）
-DATABASE_PATH = Path(__file__).parent / "artists.db"
+# 数据库文件路径（支持通过环境变量配置，默认为 backend 目录）
+DATA_DIR = Path(os.environ.get('DATA_DIR', Path(__file__).parent))
+DATABASE_PATH = DATA_DIR / "artists.db"
 
 @contextmanager
 def get_db():

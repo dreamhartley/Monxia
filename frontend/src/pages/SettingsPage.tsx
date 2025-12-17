@@ -6,18 +6,19 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
-  Settings,
   User,
   Lock,
   Eye,
   EyeOff,
+  Image,
+  Trash2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { importExportApi, accountApi } from '@/lib/api'
+import { importExportApi, accountApi, backgroundApi } from '@/lib/api'
 
 export default function SettingsPage() {
   const [exportLoading, setExportLoading] = useState(false)
@@ -35,7 +36,13 @@ export default function SettingsPage() {
   const [showCurrentPassword, setShowCurrentPassword] = useState(false)
   const [showNewPassword, setShowNewPassword] = useState(false)
 
+  // 背景图管理状态
+  const [bgLoading, setBgLoading] = useState(false)
+  const [hasCustomBg, setHasCustomBg] = useState(false)
+  const [bgPreviewUrl, setBgPreviewUrl] = useState<string | null>(null)
+
   const jsonFileRef = useRef<HTMLInputElement>(null)
+  const bgFileRef = useRef<HTMLInputElement>(null)
 
   // 获取当前用户名
   useEffect(() => {
@@ -46,6 +53,18 @@ export default function SettingsPage() {
       }
     }
     fetchAccountInfo()
+  }, [])
+
+  // 获取背景图信息
+  useEffect(() => {
+    const fetchBackgroundInfo = async () => {
+      const res = await backgroundApi.getInfo()
+      if (res.success && res.data) {
+        setHasCustomBg(res.data.has_custom)
+        setBgPreviewUrl(res.data.url)
+      }
+    }
+    fetchBackgroundInfo()
   }, [])
 
   const handleExportJson = async () => {
@@ -169,14 +188,57 @@ export default function SettingsPage() {
     }
   }
 
+  // 处理背景图上传
+  const handleUploadBackground = async (file: File) => {
+    setBgLoading(true)
+    setMessage(null)
+    try {
+      const res = await backgroundApi.upload(file)
+      if (res.success) {
+        setHasCustomBg(true)
+        // 添加时间戳防止缓存
+        setBgPreviewUrl(res.data.url + '?t=' + Date.now())
+        setMessage({ type: 'success', text: res.message || '背景图上传成功' })
+      } else {
+        setMessage({ type: 'error', text: res.error || '上传失败' })
+      }
+    } catch (error) {
+      console.error('Upload background failed:', error)
+      setMessage({ type: 'error', text: '上传失败' })
+    } finally {
+      setBgLoading(false)
+      if (bgFileRef.current) {
+        bgFileRef.current.value = ''
+      }
+    }
+  }
+
+  // 处理删除背景图
+  const handleDeleteBackground = async () => {
+    setBgLoading(true)
+    setMessage(null)
+    try {
+      const res = await backgroundApi.delete()
+      if (res.success) {
+        setHasCustomBg(false)
+        setBgPreviewUrl(null)
+        setMessage({ type: 'success', text: res.message || '已恢复默认背景' })
+      } else {
+        setMessage({ type: 'error', text: res.error || '删除失败' })
+      }
+    } catch (error) {
+      console.error('Delete background failed:', error)
+      setMessage({ type: 'error', text: '删除失败' })
+    } finally {
+      setBgLoading(false)
+    }
+  }
+
   return (
     <div className="flex-1 flex flex-col h-full">
       {/* 顶部标题栏 */}
       <header className="shrink-0 h-16 border-b border-border/50 bg-card/30 backdrop-blur-sm px-6 flex items-center">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-muted/50">
-            <Settings className="h-5 w-5 text-muted-foreground" />
-          </div>
           <div>
             <h1 className="text-xl font-semibold text-foreground">设置</h1>
             <p className="text-sm text-muted-foreground">管理应用配置和数据</p>
@@ -320,6 +382,84 @@ export default function SettingsPage() {
                 )}
                 保存修改
               </Button>
+            </CardContent>
+          </Card>
+
+          {/* 登录背景图设置 */}
+          <div className="flex items-center gap-2 pt-4">
+            <h2 className="text-lg font-medium text-foreground">登录背景</h2>
+            <span className="text-sm text-muted-foreground">· 自定义登录页面背景图</span>
+          </div>
+
+          <Card className="bg-card/80 backdrop-blur-sm border-border/50">
+            <CardHeader className="pb-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-blue-500/10">
+                  <Image className="h-5 w-5 text-blue-500" />
+                </div>
+                <div>
+                  <CardTitle className="text-base">背景图片</CardTitle>
+                  <CardDescription className="text-xs mt-0.5">
+                    {hasCustomBg ? '已设置自定义背景' : '当前使用默认背景'}
+                  </CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* 预览区域 */}
+              {bgPreviewUrl && (
+                <div className="relative rounded-lg overflow-hidden border border-border/50">
+                  <img
+                    src={bgPreviewUrl}
+                    alt="背景预览"
+                    className="w-full h-32 object-cover"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
+                  <span className="absolute bottom-2 left-2 text-xs text-white/80">当前背景预览</span>
+                </div>
+              )}
+
+              {/* 上传区域 */}
+              <input
+                ref={bgFileRef}
+                type="file"
+                accept="image/*"
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) handleUploadBackground(file)
+                }}
+                className="hidden"
+                disabled={bgLoading}
+              />
+              <div className="flex gap-2">
+                <Button
+                  onClick={() => bgFileRef.current?.click()}
+                  disabled={bgLoading}
+                  variant="outline"
+                  className="flex-1 gap-2"
+                >
+                  {bgLoading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Upload className="h-4 w-4" />
+                  )}
+                  上传背景图
+                </Button>
+                {hasCustomBg && (
+                  <Button
+                    onClick={handleDeleteBackground}
+                    disabled={bgLoading}
+                    variant="outline"
+                    className="gap-2 text-destructive hover:text-destructive"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    恢复默认
+                  </Button>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                支持 JPG、PNG、GIF、WebP 格式，建议使用 1920x1080 或更高分辨率的图片
+              </p>
             </CardContent>
           </Card>
 

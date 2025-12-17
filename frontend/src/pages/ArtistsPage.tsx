@@ -1039,7 +1039,7 @@ export default function ArtistsPage() {
       <header className="shrink-0 h-16 border-b border-border/50 bg-card/30 backdrop-blur-sm px-6 flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-foreground">画师管理</h1>
-          <p className="text-sm text-muted-foreground">管理你的画师收藏库</p>
+          <p className="text-sm text-muted-foreground">管理画师收藏库</p>
         </div>
         <Button onClick={openAddDialog} className="gap-2">
           <Plus className="h-4 w-4" />

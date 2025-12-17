@@ -5,12 +5,14 @@
 import sqlite3
 import secrets
 import hashlib
+import os
 from contextlib import contextmanager
 from typing import Optional, Dict, Any
 from pathlib import Path
 
-# 配置数据库文件路径（独立于画师数据库）
-CONFIG_DATABASE_PATH = Path(__file__).parent / "config.db"
+# 配置数据库文件路径（支持通过环境变量配置，默认为 backend 目录）
+DATA_DIR = Path(os.environ.get('DATA_DIR', Path(__file__).parent))
+CONFIG_DATABASE_PATH = DATA_DIR / "config.db"
 
 # 默认管理员账号
 DEFAULT_ADMIN_USERNAME = "admin"
