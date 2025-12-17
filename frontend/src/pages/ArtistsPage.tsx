@@ -16,6 +16,8 @@ import {
   LayoutGrid,
   List,
   X,
+  ArrowUpDown,
+  Star,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
@@ -72,6 +74,7 @@ import { Progress } from '@/components/ui/progress'
 const API_BASE = '/api'
 
 type ViewMode = 'grid' | 'list'
+type SortOption = 'date_desc' | 'date_asc' | 'count_desc' | 'count_asc'
 
 export default function ArtistsPage() {
   const [artists, setArtists] = useState<Artist[]>([])
@@ -79,7 +82,16 @@ export default function ArtistsPage() {
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<string>('all')
-  const [viewMode, setViewMode] = useState<ViewMode>('grid')
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    const saved = localStorage.getItem('artist_view_mode')
+    return (saved === 'grid' || saved === 'list') ? saved : 'grid'
+  })
+  const [sortOption, setSortOption] = useState<SortOption>('count_desc')
+  const [showFavoritesOnly, setShowFavoritesOnly] = useState(false)
+  const [favorites, setFavorites] = useState<Set<number>>(() => {
+    const saved = localStorage.getItem('artist_favorites')
+    return saved ? new Set(JSON.parse(saved)) : new Set()
+  })
 
   // Dialog states
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false)
@@ -117,6 +129,7 @@ export default function ArtistsPage() {
     name_noob: '',
     name_nai: '',
     danbooru_link: '',
+    post_count: undefined,
     notes: '',
     skip_danbooru: false,
   })
@@ -126,27 +139,102 @@ export default function ArtistsPage() {
     return name.replace(/^artist:/, '')
   }
 
+  const toggleFavorite = (artistId: number) => {
+    setFavorites((prev) => {
+      const newFavorites = new Set(prev)
+      if (newFavorites.has(artistId)) {
+        newFavorites.delete(artistId)
+      } else {
+        newFavorites.add(artistId)
+      }
+      localStorage.setItem('artist_favorites', JSON.stringify([...newFavorites]))
+      return newFavorites
+    })
+  }
+
   // Filtered artists
   const filteredArtists = useMemo(() => {
-    return artists.filter((artist) => {
-      const matchesSearch =
-        searchQuery === '' ||
-        artist.name_noob?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        artist.name_nai?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        artist.notes?.toLowerCase().includes(searchQuery.toLowerCase())
+    // 格式化1：保留空格（将下划线转为空格，合并多余空格）
+    const formatForSearch = (str: string) =>
+      str.toLowerCase().replace(/[_\s]+/g, ' ').trim()
+    // 格式化2：移除所有分隔符（下划线和空格）
+    const compactForSearch = (str: string) =>
+      str.toLowerCase().replace(/[_\s]+/g, '')
 
-      const matchesCategory =
-        selectedCategory === 'all' ||
-        artist.categories?.some((c) => c.id.toString() === selectedCategory)
+    const normalizedQuery = formatForSearch(searchQuery)
+    const compactQuery = compactForSearch(searchQuery)
 
-      return matchesSearch && matchesCategory
-    })
-  }, [artists, searchQuery, selectedCategory])
+    const checkMatch = (text: string | undefined) => {
+      if (!text) return false
+      return (
+        formatForSearch(text).includes(normalizedQuery) ||
+        (compactQuery.length > 0 && compactForSearch(text).includes(compactQuery))
+      )
+    }
+
+    return artists
+      .filter((artist) => {
+        // 收藏过滤
+        if (showFavoritesOnly && !favorites.has(artist.id)) {
+          return false
+        }
+
+        const matchesSearch =
+          searchQuery === '' ||
+          checkMatch(artist.name_noob) ||
+          checkMatch(artist.name_nai) ||
+          checkMatch(artist.notes)
+
+        let matchesCategory = false
+        if (selectedCategory === 'all') {
+          matchesCategory = true
+        } else if (selectedCategory === 'incomplete') {
+          // 待补全：缺少封面图、作品数为0/空，或（未跳过Danbooru且缺少链接）
+          const hasImage = !!artist.image_example
+          const hasPostCount = !!artist.post_count && artist.post_count > 0
+          const hasLink = !!artist.danbooru_link
+          const isSkipped = !!artist.skip_danbooru
+
+          if (isSkipped) {
+            // 如果跳过Danbooru，只要有图就算完整（因为无法获取作品数）
+            matchesCategory = !hasImage
+          } else {
+            // 否则需要有图、有作品数、有链接
+            matchesCategory = !hasImage || !hasPostCount || !hasLink
+          }
+        } else {
+          matchesCategory = artist.categories?.some(
+            (c) => c.id.toString() === selectedCategory
+          )
+        }
+
+        return matchesSearch && matchesCategory
+      })
+      .sort((a, b) => {
+        switch (sortOption) {
+          case 'date_desc':
+            return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+          case 'date_asc':
+            return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+          case 'count_desc':
+            return (b.post_count || 0) - (a.post_count || 0)
+          case 'count_asc':
+            return (a.post_count || 0) - (b.post_count || 0)
+          default:
+            return 0
+        }
+      })
+  }, [artists, searchQuery, selectedCategory, sortOption, showFavoritesOnly, favorites])
 
   // Load data
   useEffect(() => {
     loadData()
   }, [])
+
+  // Save viewMode to localStorage
+  useEffect(() => {
+    localStorage.setItem('artist_view_mode', viewMode)
+  }, [viewMode])
 
   const loadData = async () => {
     setLoading(true)
@@ -174,6 +262,7 @@ export default function ArtistsPage() {
       name_noob: '',
       name_nai: '',
       danbooru_link: '',
+      post_count: undefined,
       notes: '',
       skip_danbooru: false,
     })
@@ -205,7 +294,9 @@ export default function ArtistsPage() {
         nameData = {
           name_noob: autoCompleteRes.data.name_noob || simpleAddName,
           name_nai: autoCompleteRes.data.name_nai,
-          danbooru_link: autoCompleteRes.data.danbooru_link,
+          danbooru_link: formData.skip_danbooru
+            ? ''
+            : autoCompleteRes.data.danbooru_link,
         }
       }
 
@@ -214,7 +305,7 @@ export default function ArtistsPage() {
         ...nameData,
         category_ids: formData.category_ids,
         notes: '',
-        skip_danbooru: false,
+        skip_danbooru: formData.skip_danbooru,
       }
 
       const createRes = await artistApi.create(createData)
@@ -222,8 +313,8 @@ export default function ArtistsPage() {
       if (createRes.success && createRes.data) {
         const newArtistId = createRes.data.id
 
-        // 3. 尝试获取作品数据 (如果有链接)
-        if (nameData.danbooru_link) {
+        // 3. 尝试获取作品数据 (如果有链接 且 未跳过Danbooru)
+        if (nameData.danbooru_link && !formData.skip_danbooru) {
           await toolsApi.fetchPostCounts([newArtistId])
         }
 
@@ -239,6 +330,7 @@ export default function ArtistsPage() {
             name_noob: artist.name_noob || '',
             name_nai: artist.name_nai || '',
             danbooru_link: artist.danbooru_link || '',
+            post_count: artist.post_count || undefined,
             notes: artist.notes || '',
             skip_danbooru: artist.skip_danbooru || false,
           })
@@ -263,6 +355,7 @@ export default function ArtistsPage() {
                  name_noob: artist.name_noob || '',
                  name_nai: artist.name_nai || '',
                  danbooru_link: artist.danbooru_link || '',
+                 post_count: artist.post_count || undefined,
                  notes: artist.notes || '',
                  skip_danbooru: artist.skip_danbooru || false,
                })
@@ -437,6 +530,7 @@ export default function ArtistsPage() {
       name_noob: artist.name_noob || '',
       name_nai: artist.name_nai || '',
       danbooru_link: artist.danbooru_link || '',
+      post_count: artist.post_count || undefined,
       notes: artist.notes || '',
       skip_danbooru: artist.skip_danbooru || false,
     })
@@ -513,6 +607,12 @@ export default function ArtistsPage() {
         )}
         {/* 操作菜单 */}
         {renderDropdownMenu(artist)}
+
+        {/* 收藏标记 */}
+        {favorites.has(artist.id) && (
+          <Star className="absolute top-2 left-2 h-5 w-5 text-[#FFFACD] fill-[#FFFACD] drop-shadow-md" />
+        )}
+
       </div>
 
       {/* 隐藏的文件输入框 */}
@@ -533,27 +633,41 @@ export default function ArtistsPage() {
 
       {/* 信息区域 */}
       <CardContent className="p-4">
-        <h3 className="font-semibold text-foreground truncate mb-1">
-          {getDisplayName(artist)}
-        </h3>
-        <div className="flex flex-wrap gap-1 mb-2">
-          {artist.categories?.map((cat) => (
-            <Badge key={cat.id} variant="secondary" className="text-xs">
-              {cat.name}
-            </Badge>
-          ))}
+        {/* 上半部分：名称、分类、备注 */}
+        <div className="flex gap-2 items-start mb-2">
+          <div className="flex-1 min-w-0">
+            <h3 className="font-semibold text-foreground truncate mb-1">
+              {getDisplayName(artist)}
+            </h3>
+            {/* 标签区域 - 单行显示，右侧截断 */}
+            <div className="relative overflow-hidden">
+              <div className="flex flex-nowrap gap-1 overflow-hidden">
+                {artist.categories?.map((cat) => (
+                  <Badge key={cat.id} variant="secondary" className="text-xs shrink-0">
+                    {cat.name}
+                  </Badge>
+                ))}
+              </div>
+              {/* 渐变遮罩 - 当标签可能超出时显示 */}
+              {artist.categories && artist.categories.length > 2 && (
+                <div className="absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-card to-transparent pointer-events-none" />
+              )}
+            </div>
+          </div>
+          {/* 备注区域 */}
+          {artist.notes && (
+            <div className="shrink-0 w-24 h-10 border border-border/50 rounded-md p-1 overflow-y-auto bg-secondary/10 text-[10px] text-muted-foreground leading-tight">
+              {artist.notes}
+            </div>
+          )}
         </div>
-        <div className="flex items-center justify-between text-sm text-muted-foreground">
-          <span>作品数</span>
+        {/* 下半部分：作品数 */}
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-muted-foreground">作品数</span>
           <span className="font-medium text-primary">
             {artist.post_count?.toLocaleString() || '-'}
           </span>
         </div>
-        {artist.notes && (
-          <p className="text-xs text-muted-foreground mt-2 line-clamp-2">
-            {artist.notes}
-          </p>
-        )}
       </CardContent>
     </Card>
   )
@@ -566,7 +680,7 @@ export default function ArtistsPage() {
     >
       <CardContent className="p-3 flex items-center gap-4">
         {/* 缩略图 */}
-        <div className="w-16 h-16 shrink-0 rounded-lg bg-secondary/30 overflow-hidden">
+        <div className="w-16 h-16 shrink-0 rounded-lg bg-secondary/30 overflow-hidden relative">
           {artist.image_example ? (
             <img
               src={`${API_BASE.replace('/api', '')}/images/${artist.image_example}`}
@@ -588,6 +702,10 @@ export default function ArtistsPage() {
               <ImageIcon className="h-6 w-6 text-muted-foreground/30" />
             </div>
           )}
+          {/* 收藏标记 */}
+          {favorites.has(artist.id) && (
+            <Star className="absolute top-0.5 left-0.5 h-4 w-4 text-[#FFFACD] fill-[#FFFACD] drop-shadow-md" />
+          )}
         </div>
 
         {/* 信息区域 */}
@@ -595,24 +713,28 @@ export default function ArtistsPage() {
           <h3 className="font-semibold text-foreground truncate">
             {getDisplayName(artist)}
           </h3>
-          <div className="flex flex-wrap gap-1 mt-1">
-            {artist.categories?.slice(0, 3).map((cat) => (
-              <Badge key={cat.id} variant="secondary" className="text-xs">
-                {cat.name}
-              </Badge>
-            ))}
+          {/* 标签区域 - 单行显示，右侧截断 */}
+          <div className="relative mt-1 overflow-hidden">
+            <div className="flex flex-nowrap gap-1 overflow-hidden">
+              {artist.categories?.map((cat) => (
+                <Badge key={cat.id} variant="secondary" className="text-xs shrink-0">
+                  {cat.name}
+                </Badge>
+              ))}
+            </div>
+            {/* 渐变遮罩 */}
             {artist.categories && artist.categories.length > 3 && (
-              <Badge variant="outline" className="text-xs">
-                +{artist.categories.length - 3}
-              </Badge>
+              <div className="absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-card to-transparent pointer-events-none" />
             )}
           </div>
-          {artist.notes && (
-            <p className="text-xs text-muted-foreground mt-1 truncate">
-              {artist.notes}
-            </p>
-          )}
         </div>
+
+        {/* 备注 (仅当有备注时显示) */}
+        {artist.notes && (
+          <div className="shrink-0 w-48 h-16 mr-4 border border-border/50 rounded-md p-2 overflow-y-auto bg-secondary/10 text-xs text-muted-foreground">
+            {artist.notes}
+          </div>
+        )}
 
         {/* 作品数 */}
         <div className="text-right shrink-0">
@@ -623,7 +745,7 @@ export default function ArtistsPage() {
         </div>
 
         {/* 操作菜单 */}
-        <div className="shrink-0">
+        <div className="shrink-0 flex items-center gap-2">
           {renderDropdownMenu(artist, true)}
         </div>
         {/* 隐藏的文件输入框 */}
@@ -665,6 +787,10 @@ export default function ArtistsPage() {
         <DropdownMenuItem onClick={() => openEditDialog(artist)}>
           <Edit className="h-4 w-4 mr-2" />
           编辑
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => toggleFavorite(artist.id)}>
+          <Star className={`h-4 w-4 mr-2 ${favorites.has(artist.id) ? 'fill-current text-yellow-500' : ''}`} />
+          {favorites.has(artist.id) ? '移出收藏' : '加入收藏'}
         </DropdownMenuItem>
         <DropdownMenuItem
           onClick={() => {
@@ -728,7 +854,18 @@ export default function ArtistsPage() {
       </header>
 
       {/* 筛选栏 */}
-      <div className="shrink-0 px-6 py-4 flex gap-3 items-center">
+      <div className="shrink-0 px-6 py-4">
+        <div className="max-w-6xl mx-auto flex gap-3 items-center">
+        {/* 收藏筛选按钮 */}
+        <Button
+          variant={showFavoritesOnly ? 'default' : 'outline'}
+          size="icon"
+          onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
+          className="shrink-0"
+          title={showFavoritesOnly ? '显示全部' : '仅显示收藏'}
+        >
+          <Star className={`h-4 w-4 ${showFavoritesOnly ? 'fill-current' : ''}`} />
+        </Button>
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
@@ -745,11 +882,26 @@ export default function ArtistsPage() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">全部分类</SelectItem>
+            <SelectItem value="incomplete">待补全</SelectItem>
             {categories.map((cat) => (
               <SelectItem key={cat.id} value={cat.id.toString()}>
                 {cat.name}
               </SelectItem>
             ))}
+          </SelectContent>
+        </Select>
+
+        {/* 排序 */}
+        <Select value={sortOption} onValueChange={(v) => setSortOption(v as SortOption)}>
+          <SelectTrigger className="w-40 bg-card/50 border-border/50">
+            <ArrowUpDown className="h-4 w-4 mr-2 text-muted-foreground" />
+            <SelectValue placeholder="排序方式" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="count_desc">作品数 ↓</SelectItem>
+            <SelectItem value="count_asc">作品数 ↑</SelectItem>
+            <SelectItem value="date_desc">添加时间 ↓</SelectItem>
+            <SelectItem value="date_asc">添加时间 ↑</SelectItem>
           </SelectContent>
         </Select>
 
@@ -841,29 +993,66 @@ export default function ArtistsPage() {
           <Sparkles className="h-4 w-4" />
           一键自动补全
         </Button>
+        </div>
       </div>
 
       {/* 画师列表 */}
       <ScrollArea className="flex-1 px-6 pb-6">
-        {loading ? (
-          <div className="flex items-center justify-center h-64">
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
-          </div>
-        ) : filteredArtists.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
-            <AlertCircle className="h-12 w-12 mb-4" />
-            <p className="text-lg font-medium">未找到画师</p>
-            <p className="text-sm">尝试调整搜索条件或添加新画师</p>
-          </div>
-        ) : viewMode === 'grid' ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {filteredArtists.map(renderGridCard)}
-          </div>
-        ) : (
-          <div className="space-y-2 max-w-4xl">
-            {filteredArtists.map(renderListCard)}
-          </div>
-        )}
+        <div className="max-w-6xl mx-auto">
+          {loading ? (
+            <div className="flex items-center justify-center h-64">
+              <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            </div>
+          ) : filteredArtists.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
+              {showFavoritesOnly ? (
+                <>
+                  <Star className="h-12 w-12 mb-4" />
+                  <p className="text-lg font-medium">暂无收藏</p>
+                  <p className="text-sm">点击画师卡片菜单中的「加入收藏」来添加</p>
+                </>
+              ) : searchQuery ? (
+                <>
+                  <Search className="h-12 w-12 mb-4" />
+                  <p className="text-lg font-medium">未找到匹配的画师</p>
+                  <p className="text-sm">尝试使用其他关键词搜索</p>
+                </>
+              ) : selectedCategory === 'incomplete' ? (
+                <>
+                  <Sparkles className="h-12 w-12 mb-4" />
+                  <p className="text-lg font-medium">太棒了！</p>
+                  <p className="text-sm">所有画师数据完整</p>
+                </>
+              ) : selectedCategory !== 'all' ? (
+                <>
+                  <Filter className="h-12 w-12 mb-4" />
+                  <p className="text-lg font-medium">该分类下暂无画师</p>
+                  <p className="text-sm">尝试选择其他分类或添加新画师</p>
+                </>
+              ) : artists.length === 0 ? (
+                <>
+                  <AlertCircle className="h-12 w-12 mb-4" />
+                  <p className="text-lg font-medium">暂无画师</p>
+                  <p className="text-sm">点击右上角「添加画师」开始添加</p>
+                </>
+              ) : (
+                <>
+                  <AlertCircle className="h-12 w-12 mb-4" />
+                  <p className="text-lg font-medium">未找到画师</p>
+                  <p className="text-sm">尝试调整筛选条件</p>
+                </>
+              )}
+            </div>
+          ) : viewMode === 'grid' ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {filteredArtists.map(renderGridCard)}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {filteredArtists.map(renderListCard)}
+            </div>
+          )}
+        </div>
       </ScrollArea>
 
       {/* 添加画师对话框 */}
@@ -906,7 +1095,7 @@ export default function ArtistsPage() {
                     })
                   ) : (
                     <span className="text-sm text-muted-foreground flex items-center">
-                      尚未选择分类
+                      至少选择一个分类
                     </span>
                   )}
                 </div>
@@ -924,7 +1113,7 @@ export default function ArtistsPage() {
                   <SelectTrigger className="w-full">
                     <SelectValue placeholder="选择分类添加..." />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="max-h-[200px]">
                     <div className="p-1">
                       <Button
                         variant="ghost"
@@ -969,6 +1158,26 @@ export default function ArtistsPage() {
               <p className="text-xs text-muted-foreground">
                 输入名称后将自动进行格式化和数据获取
               </p>
+            </div>
+
+            {/* 跳过Danbooru */}
+            <div className="flex items-center space-x-2">
+              <Checkbox
+                id="add_skip_danbooru"
+                checked={formData.skip_danbooru}
+                onCheckedChange={(checked) =>
+                  setFormData((prev) => ({
+                    ...prev,
+                    skip_danbooru: checked as boolean,
+                  }))
+                }
+              />
+              <label
+                htmlFor="add_skip_danbooru"
+                className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
+              >
+                跳过 Danbooru 获取
+              </label>
             </div>
           </div>
           <DialogFooter>
@@ -1027,7 +1236,7 @@ export default function ArtistsPage() {
                     })
                   ) : (
                     <span className="text-sm text-muted-foreground flex items-center">
-                      尚未选择分类
+                      至少选择一个分类
                     </span>
                   )}
                 </div>
@@ -1045,7 +1254,7 @@ export default function ArtistsPage() {
                   <SelectTrigger className="w-full">
                     <SelectValue placeholder="选择分类添加..." />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="max-h-[200px]">
                     <div className="p-1">
                       <Button
                         variant="ghost"
@@ -1097,19 +1306,36 @@ export default function ArtistsPage() {
               </div>
             </div>
 
-            {/* Danbooru 链接 */}
-            <div className="space-y-2">
-              <Label htmlFor="edit_danbooru_link">Danbooru 链接</Label>
-              <Input
-                id="edit_danbooru_link"
-                value={formData.danbooru_link}
-                onChange={(e) =>
-                  setFormData((prev) => ({
-                    ...prev,
-                    danbooru_link: e.target.value,
-                  }))
-                }
-              />
+            {/* Danbooru 链接 和 作品数量 */}
+            <div className="flex gap-4">
+              <div className="flex-1 space-y-2">
+                <Label htmlFor="edit_danbooru_link">Danbooru 链接</Label>
+                <Input
+                  id="edit_danbooru_link"
+                  value={formData.danbooru_link}
+                  onChange={(e) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      danbooru_link: e.target.value,
+                    }))
+                  }
+                />
+              </div>
+              <div className="w-24 space-y-2">
+                <Label htmlFor="edit_post_count">作品数量</Label>
+                <Input
+                  id="edit_post_count"
+                  type="number"
+                  min="0"
+                  value={formData.post_count === undefined ? '' : formData.post_count}
+                  onChange={(e) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      post_count: e.target.value === '' ? undefined : parseInt(e.target.value),
+                    }))
+                  }
+                />
+              </div>
             </div>
 
             {/* 备注 */}

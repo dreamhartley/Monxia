@@ -103,6 +103,7 @@ export interface CreateArtistData {
   name_noob?: string
   name_nai?: string
   danbooru_link?: string
+  post_count?: number
   notes?: string
   skip_danbooru?: boolean
 }
