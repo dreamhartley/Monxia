@@ -245,6 +245,8 @@ export interface Preset {
   name: string
   description: string
   artist_ids: string
+  noob_text?: string
+  nai_text?: string
   created_at: string
   updated_at: string
 }
@@ -252,10 +254,16 @@ export interface Preset {
 export const presetApi = {
   getAll: () => request<Preset[]>('/presets'),
 
-  create: (name: string, description: string, artist_ids: number[]) =>
+  create: (name: string, description: string, artist_ids: number[], noob_text: string, nai_text: string) =>
     request<{ id: number }>('/presets', {
       method: 'POST',
-      body: JSON.stringify({ name, description, artist_ids }),
+      body: JSON.stringify({ name, description, artist_ids, noob_text, nai_text }),
+    }),
+
+  update: (id: number, name: string, description: string, artist_ids: number[], noob_text: string, nai_text: string) =>
+    request(`/presets/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ name, description, artist_ids, noob_text, nai_text }),
     }),
 
   delete: (id: number) =>

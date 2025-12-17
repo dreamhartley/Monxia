@@ -939,22 +939,58 @@ def api_create_preset():
         name = data.get('name', '').strip()
         description = data.get('description', '').strip()
         artist_ids = data.get('artist_ids', [])
+        noob_text = data.get('noob_text', '').strip()
+        nai_text = data.get('nai_text', '').strip()
 
-        if not name or not artist_ids:
-            return jsonify({"success": False, "error": "名称和画师列表不能为空"}), 400
+        if not name:
+            return jsonify({"success": False, "error": "名称不能为空"}), 400
+            
+        # 允许没有 artist_ids，只要有文本内容即可，但为了兼容性，可以允许空 artist_ids
+        # 如果前端解析了 ID，还是保存一下以便关联
 
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO artist_presets (name, description, artist_ids)
-                VALUES (?, ?, ?)
-            """, (name, description, json.dumps(artist_ids)))
+                INSERT INTO artist_presets (name, description, artist_ids, noob_text, nai_text)
+                VALUES (?, ?, ?, ?, ?)
+            """, (name, description, json.dumps(artist_ids), noob_text, nai_text))
 
             preset_id = cursor.lastrowid
 
         return jsonify({"success": True, "data": {"id": preset_id}})
     except Exception as e:
         logging.error(f"创建画师串失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/presets/<int:preset_id>', methods=['PUT'])
+@login_required
+def api_update_preset(preset_id):
+    """更新画师串"""
+    try:
+        data = request.json
+        name = data.get('name', '').strip()
+        description = data.get('description', '').strip()
+        artist_ids = data.get('artist_ids', [])
+        noob_text = data.get('noob_text', '').strip()
+        nai_text = data.get('nai_text', '').strip()
+
+        if not name:
+            return jsonify({"success": False, "error": "名称不能为空"}), 400
+
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE artist_presets
+                SET name = ?, description = ?, artist_ids = ?, noob_text = ?, nai_text = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (name, description, json.dumps(artist_ids), noob_text, nai_text, preset_id))
+            
+            if cursor.rowcount > 0:
+                return jsonify({"success": True})
+            else:
+                return jsonify({"success": False, "error": "画师串不存在"}), 404
+    except Exception as e:
+        logging.error(f"更新画师串失败: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/presets/<int:preset_id>', methods=['DELETE'])
