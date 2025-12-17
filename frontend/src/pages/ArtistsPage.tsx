@@ -20,6 +20,7 @@ import {
   ArrowUpDown,
   Star,
   ArrowUp,
+  ListPlus,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
@@ -72,6 +73,7 @@ import {
   type AutoCompleteProgress,
 } from '@/lib/api'
 import { Progress } from '@/components/ui/progress'
+import { PRESET_DRAFT_KEY, type PresetDraft, type ArtistTag } from './PresetsPage'
 
 const API_BASE = '/api'
 
@@ -99,6 +101,26 @@ export default function ArtistsPage() {
     const saved = localStorage.getItem('category_order')
     return saved ? JSON.parse(saved) : []
   })
+
+  // Toast 提示状态
+  const [toast, setToast] = useState<{ message: string; visible: boolean }>({
+    message: '',
+    visible: false,
+  })
+
+  // Toast 自动消失
+  useEffect(() => {
+    if (toast.visible) {
+      const timer = setTimeout(() => {
+        setToast(prev => ({ ...prev, visible: false }))
+      }, 2000)
+      return () => clearTimeout(timer)
+    }
+  }, [toast.visible])
+
+  const showToast = useCallback((message: string) => {
+    setToast({ message, visible: true })
+  }, [])
 
   // 回到顶部功能
   const scrollAreaRef = useRef<HTMLDivElement>(null)
@@ -689,6 +711,52 @@ export default function ArtistsPage() {
     navigator.clipboard.writeText(text)
   }
 
+  // 添加画师到画师串草稿
+  const addToPresetDraft = (artist: Artist) => {
+    try {
+      // 读取现有草稿
+      const saved = localStorage.getItem(PRESET_DRAFT_KEY)
+      let draft: PresetDraft = {
+        name: '',
+        description: '',
+        noobTags: [],
+        naiTags: [],
+      }
+      if (saved) {
+        draft = JSON.parse(saved)
+      }
+
+      // 添加画师的 NOOB 格式（如果有）
+      if (artist.name_noob) {
+        const noobTag: ArtistTag = { name: artist.name_noob, weight: 1.0 }
+        // 检查是否已存在
+        const exists = draft.noobTags.some(t => t.name === noobTag.name)
+        if (!exists) {
+          draft.noobTags.push(noobTag)
+        }
+      }
+
+      // 添加画师的 NAI 格式（如果有）
+      if (artist.name_nai) {
+        const naiTag: ArtistTag = { name: artist.name_nai, weight: 1.0 }
+        // 检查是否已存在
+        const exists = draft.naiTags.some(t => t.name === naiTag.name)
+        if (!exists) {
+          draft.naiTags.push(naiTag)
+        }
+      }
+
+      // 保存更新后的草稿
+      localStorage.setItem(PRESET_DRAFT_KEY, JSON.stringify(draft))
+
+      // 显示成功提示
+      showToast(`已将 ${getDisplayName(artist)} 添加到画师串草稿`)
+    } catch (e) {
+      console.error('Failed to add to preset draft:', e)
+      showToast('添加失败')
+    }
+  }
+
   const toggleCategorySelection = (categoryId: number) => {
     setFormData((prev) => ({
       ...prev,
@@ -913,6 +981,10 @@ export default function ArtistsPage() {
         <DropdownMenuItem onClick={() => toggleFavorite(artist.id)}>
           <Star className={`h-4 w-4 mr-2 ${favorites.has(artist.id) ? 'fill-current text-yellow-500' : ''}`} />
           {favorites.has(artist.id) ? '移出收藏' : '加入收藏'}
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => addToPresetDraft(artist)}>
+          <ListPlus className="h-4 w-4 mr-2" />
+          添加到画师串
         </DropdownMenuItem>
         <DropdownMenuItem
           onClick={() => {
@@ -1203,6 +1275,20 @@ export default function ArtistsPage() {
             >
               <ArrowUp className="h-5 w-5" />
             </Button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Toast 提示 */}
+      <AnimatePresence>
+        {toast.visible && (
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-foreground text-background rounded-lg shadow-lg text-sm font-medium"
+          >
+            {toast.message}
           </motion.div>
         )}
       </AnimatePresence>

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import type { KeyboardEvent } from 'react'
 import {
   Plus,
@@ -10,6 +10,7 @@ import {
   AlertCircle,
   Edit2,
   ArrowDownUp,
+  RotateCcw,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -35,8 +36,19 @@ import {
 } from '@/components/ui/alert-dialog'
 import { presetApi, type Preset } from '@/lib/api'
 
+// 草稿存储 key（导出以便其他页面使用）
+export const PRESET_DRAFT_KEY = 'preset_draft'
+
+// 草稿数据结构
+export interface PresetDraft {
+  name: string
+  description: string
+  noobTags: ArtistTag[]
+  naiTags: ArtistTag[]
+}
+
 // 画师标签类型
-interface ArtistTag {
+export interface ArtistTag {
   name: string
   weight: number // 1.0 表示无权重
 }
@@ -55,13 +67,13 @@ function cleanArtistName(name: string): string {
 }
 
 // NOOB 格式：先清洗，然后对括号添加反斜杠转义
-function formatNoob(name: string): string {
+export function formatNoob(name: string): string {
   const cleanName = cleanArtistName(name)
   return cleanName.replace(/([()])/g, '\\$1')
 }
 
 // NAI 格式：先清洗，如果不以 "artist:" 开头则添加该前缀
-function formatNai(name: string): string {
+export function formatNai(name: string): string {
   const cleaned = cleanArtistName(name)
   if (!cleaned.startsWith('artist:')) {
     return `artist:${cleaned}`
@@ -191,6 +203,35 @@ export default function PresetsPage() {
   const [draggedNaiIndex, setDraggedNaiIndex] = useState<number | null>(null)
   const [dragOverNaiIndex, setDragOverNaiIndex] = useState<number | null>(null)
 
+  // 双击检测（更严格的双击判断）
+  const lastClickRef = useRef<{ type: 'noob' | 'nai'; index: number; time: number } | null>(null)
+  const DOUBLE_CLICK_THRESHOLD = 250 // 双击间隔阈值（毫秒）
+
+  const handleTagClick = useCallback((type: 'noob' | 'nai', index: number, e: React.MouseEvent) => {
+    e.stopPropagation()
+    const now = Date.now()
+    const last = lastClickRef.current
+
+    // 检测双击：同一类型、同一索引、时间间隔内
+    if (last && last.type === type && last.index === index && (now - last.time) < DOUBLE_CLICK_THRESHOLD) {
+      // 双击删除
+      if (type === 'noob') {
+        removeNoobTag(index)
+      } else {
+        removeNaiTag(index)
+      }
+      lastClickRef.current = null
+    } else {
+      // 单击选中/取消选中
+      if (type === 'noob') {
+        setSelectedNoobIndex(selectedNoobIndex === index ? null : index)
+      } else {
+        setSelectedNaiIndex(selectedNaiIndex === index ? null : index)
+      }
+      lastClickRef.current = { type, index, time: now }
+    }
+  }, [selectedNoobIndex, selectedNaiIndex])
+
   useEffect(() => {
     loadData()
   }, [])
@@ -218,6 +259,52 @@ export default function PresetsPage() {
     setSelectedNoobIndex(null)
     setSelectedNaiIndex(null)
   }
+
+  // 加载草稿
+  const loadDraft = useCallback(() => {
+    try {
+      const saved = localStorage.getItem(PRESET_DRAFT_KEY)
+      if (saved) {
+        const draft: PresetDraft = JSON.parse(saved)
+        setFormData(prev => ({
+          ...prev,
+          name: draft.name || '',
+          description: draft.description || '',
+        }))
+        setNoobTags(draft.noobTags || [])
+        setNaiTags(draft.naiTags || [])
+      }
+    } catch (e) {
+      console.error('Failed to load draft:', e)
+    }
+  }, [])
+
+  // 保存草稿
+  const saveDraft = useCallback(() => {
+    // 只有在创建模式下才保存草稿
+    if (formData.id !== undefined) return
+
+    const draft: PresetDraft = {
+      name: formData.name,
+      description: formData.description,
+      noobTags,
+      naiTags,
+    }
+    localStorage.setItem(PRESET_DRAFT_KEY, JSON.stringify(draft))
+  }, [formData.id, formData.name, formData.description, noobTags, naiTags])
+
+  // 清空草稿
+  const clearDraft = useCallback(() => {
+    localStorage.removeItem(PRESET_DRAFT_KEY)
+    resetForm()
+  }, [])
+
+  // 当输入变化时保存草稿（仅在创建模式下）
+  useEffect(() => {
+    if (isAddDialogOpen && formData.id === undefined) {
+      saveDraft()
+    }
+  }, [isAddDialogOpen, formData.id, formData.name, formData.description, noobTags, naiTags, saveDraft])
 
   // 标签操作函数
   const handleNoobKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -490,6 +577,7 @@ export default function PresetsPage() {
         await loadData()
         setIsAddDialogOpen(false)
         resetForm()
+        localStorage.removeItem(PRESET_DRAFT_KEY) // 保存成功后清除草稿
       } else {
         alert(res.error || '保存失败')
       }
@@ -537,6 +625,7 @@ export default function PresetsPage() {
         <Button
           onClick={() => {
             resetForm()
+            loadDraft() // 恢复草稿
             setIsAddDialogOpen(true)
           }}
           className="gap-2"
@@ -695,14 +784,7 @@ export default function PresetsPage() {
                     onDragOver={(e) => handleNoobDragOver(e, index)}
                     onDragEnd={handleNoobDragEnd}
                     onDrop={(e) => handleNoobDrop(e, index)}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setSelectedNoobIndex(selectedNoobIndex === index ? null : index)
-                    }}
-                    onDoubleClick={(e) => {
-                      e.stopPropagation()
-                      removeNoobTag(index)
-                    }}
+                    onClick={(e) => handleTagClick('noob', index, e)}
                     className={`inline-flex items-center h-6 px-2 rounded text-sm cursor-pointer transition-all ${
                       selectedNoobIndex === index
                         ? 'bg-primary text-primary-foreground'
@@ -710,7 +792,7 @@ export default function PresetsPage() {
                     } ${draggedNoobIndex === index ? 'opacity-50' : ''} ${
                       dragOverNoobIndex === index ? 'ring-2 ring-primary ring-offset-1' : ''
                     }`}
-                    title="单击选中，双击删除，拖拽移动"
+                    title="单击选中，快速双击删除，拖拽移动"
                   >
                     <span>{tag.name}</span>
                     {tag.weight !== 1.0 && (
@@ -792,14 +874,7 @@ export default function PresetsPage() {
                     onDragOver={(e) => handleNaiDragOver(e, index)}
                     onDragEnd={handleNaiDragEnd}
                     onDrop={(e) => handleNaiDrop(e, index)}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setSelectedNaiIndex(selectedNaiIndex === index ? null : index)
-                    }}
-                    onDoubleClick={(e) => {
-                      e.stopPropagation()
-                      removeNaiTag(index)
-                    }}
+                    onClick={(e) => handleTagClick('nai', index, e)}
                     className={`inline-flex items-center h-6 px-2 rounded text-sm cursor-pointer transition-all ${
                       selectedNaiIndex === index
                         ? 'bg-primary text-primary-foreground'
@@ -807,7 +882,7 @@ export default function PresetsPage() {
                     } ${draggedNaiIndex === index ? 'opacity-50' : ''} ${
                       dragOverNaiIndex === index ? 'ring-2 ring-primary ring-offset-1' : ''
                     }`}
-                    title="单击选中，双击删除，拖拽移动"
+                    title="单击选中，快速双击删除，拖拽移动"
                   >
                     <span>{tag.name}</span>
                     {tag.weight !== 1.0 && (
@@ -826,8 +901,8 @@ export default function PresetsPage() {
             </div>
           </div>
           <DialogFooter className="mt-2 flex justify-between items-center w-full">
-             <div className="flex-1">
-              {formData.id && (
+             <div className="flex-1 flex gap-2">
+              {formData.id ? (
                 <Button
                   variant="destructive"
                   onClick={() => {
@@ -837,6 +912,15 @@ export default function PresetsPage() {
                 >
                   <Trash2 className="h-4 w-4 mr-2" />
                   删除
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  onClick={clearDraft}
+                  className="gap-2"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  清空
                 </Button>
               )}
             </div>
