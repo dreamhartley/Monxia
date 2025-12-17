@@ -9,6 +9,7 @@ import {
   Copy,
   AlertCircle,
   Edit2,
+  ArrowDownUp,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -184,6 +185,12 @@ export default function PresetsPage() {
   const [selectedNoobIndex, setSelectedNoobIndex] = useState<number | null>(null)
   const [selectedNaiIndex, setSelectedNaiIndex] = useState<number | null>(null)
 
+  // 拖拽状态
+  const [draggedNoobIndex, setDraggedNoobIndex] = useState<number | null>(null)
+  const [dragOverNoobIndex, setDragOverNoobIndex] = useState<number | null>(null)
+  const [draggedNaiIndex, setDraggedNaiIndex] = useState<number | null>(null)
+  const [dragOverNaiIndex, setDragOverNaiIndex] = useState<number | null>(null)
+
   useEffect(() => {
     loadData()
   }, [])
@@ -343,6 +350,105 @@ export default function PresetsPage() {
       }
       return tag
     }))
+  }
+
+  // NOOB 标签拖拽处理
+  const handleNoobDragStart = (index: number) => {
+    setDraggedNoobIndex(index)
+  }
+
+  const handleNoobDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault()
+    if (draggedNoobIndex !== null && draggedNoobIndex !== index) {
+      setDragOverNoobIndex(index)
+    }
+  }
+
+  const handleNoobDragEnd = () => {
+    setDraggedNoobIndex(null)
+    setDragOverNoobIndex(null)
+  }
+
+  const handleNoobDrop = (e: React.DragEvent, dropIndex: number) => {
+    e.preventDefault()
+    if (draggedNoobIndex === null || draggedNoobIndex === dropIndex) {
+      handleNoobDragEnd()
+      return
+    }
+    const newTags = [...noobTags]
+    const [draggedTag] = newTags.splice(draggedNoobIndex, 1)
+    newTags.splice(dropIndex, 0, draggedTag)
+    setNoobTags(newTags)
+    // 更新选中索引
+    if (selectedNoobIndex === draggedNoobIndex) {
+      setSelectedNoobIndex(dropIndex)
+    } else if (selectedNoobIndex !== null) {
+      if (draggedNoobIndex < selectedNoobIndex && dropIndex >= selectedNoobIndex) {
+        setSelectedNoobIndex(selectedNoobIndex - 1)
+      } else if (draggedNoobIndex > selectedNoobIndex && dropIndex <= selectedNoobIndex) {
+        setSelectedNoobIndex(selectedNoobIndex + 1)
+      }
+    }
+    handleNoobDragEnd()
+  }
+
+  // NAI 标签拖拽处理
+  const handleNaiDragStart = (index: number) => {
+    setDraggedNaiIndex(index)
+  }
+
+  const handleNaiDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault()
+    if (draggedNaiIndex !== null && draggedNaiIndex !== index) {
+      setDragOverNaiIndex(index)
+    }
+  }
+
+  const handleNaiDragEnd = () => {
+    setDraggedNaiIndex(null)
+    setDragOverNaiIndex(null)
+  }
+
+  const handleNaiDrop = (e: React.DragEvent, dropIndex: number) => {
+    e.preventDefault()
+    if (draggedNaiIndex === null || draggedNaiIndex === dropIndex) {
+      handleNaiDragEnd()
+      return
+    }
+    const newTags = [...naiTags]
+    const [draggedTag] = newTags.splice(draggedNaiIndex, 1)
+    newTags.splice(dropIndex, 0, draggedTag)
+    setNaiTags(newTags)
+    // 更新选中索引
+    if (selectedNaiIndex === draggedNaiIndex) {
+      setSelectedNaiIndex(dropIndex)
+    } else if (selectedNaiIndex !== null) {
+      if (draggedNaiIndex < selectedNaiIndex && dropIndex >= selectedNaiIndex) {
+        setSelectedNaiIndex(selectedNaiIndex - 1)
+      } else if (draggedNaiIndex > selectedNaiIndex && dropIndex <= selectedNaiIndex) {
+        setSelectedNaiIndex(selectedNaiIndex + 1)
+      }
+    }
+    handleNaiDragEnd()
+  }
+
+  // 格式转换函数
+  const convertFormats = () => {
+    if (noobTags.length > 0 && naiTags.length === 0) {
+      // NOOB → NAI
+      const converted = noobTags.map(tag => ({
+        name: formatNai(extractFromNoob(tag.name)),
+        weight: tag.weight
+      }))
+      setNaiTags(converted)
+    } else if (naiTags.length > 0 && noobTags.length === 0) {
+      // NAI → NOOB
+      const converted = naiTags.map(tag => ({
+        name: formatNoob(extractFromNai(tag.name)),
+        weight: tag.weight
+      }))
+      setNoobTags(converted)
+    }
   }
 
   const handleSavePreset = async () => {
@@ -512,8 +618,8 @@ export default function PresetsPage() {
           <DialogHeader>
             <DialogTitle>{formData.id ? '编辑画师串' : '创建画师串'}</DialogTitle>
           </DialogHeader>
-          <div className="flex-1 space-y-6 py-4 overflow-y-auto">
-            <div className="space-y-2">
+          <div className="flex-1 space-y-3 py-2">
+            <div className="space-y-1">
               <Label htmlFor="name" className="text-base">名称</Label>
               <Input
                 id="name"
@@ -526,7 +632,20 @@ export default function PresetsPage() {
               />
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-1">
+              <Label htmlFor="description" className="text-base">描述</Label>
+              <Input
+                id="description"
+                placeholder="添加描述..."
+                value={formData.description}
+                onChange={(e) =>
+                  setFormData((prev) => ({ ...prev, description: e.target.value }))
+                }
+                className="h-10"
+              />
+            </div>
+
+            <div className="space-y-1">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Label htmlFor="noob_format" className="text-base">NOOB格式</Label>
@@ -561,7 +680,7 @@ export default function PresetsPage() {
                 </div>
               </div>
               <div
-                className="flex flex-wrap content-start gap-1.5 p-2 min-h-[80px] border rounded-md bg-background cursor-text"
+                className="flex flex-wrap content-start gap-1.5 p-2 min-h-[70px] border rounded-md bg-background cursor-text"
                 onClick={(e) => {
                   // 点击空白区域时聚焦输入框
                   const input = e.currentTarget.querySelector('input')
@@ -571,15 +690,27 @@ export default function PresetsPage() {
                 {noobTags.map((tag, index) => (
                   <div
                     key={index}
+                    draggable
+                    onDragStart={() => handleNoobDragStart(index)}
+                    onDragOver={(e) => handleNoobDragOver(e, index)}
+                    onDragEnd={handleNoobDragEnd}
+                    onDrop={(e) => handleNoobDrop(e, index)}
                     onClick={(e) => {
                       e.stopPropagation()
                       setSelectedNoobIndex(selectedNoobIndex === index ? null : index)
                     }}
-                    className={`inline-flex items-center h-6 px-2 rounded text-sm cursor-pointer transition-colors ${
+                    onDoubleClick={(e) => {
+                      e.stopPropagation()
+                      removeNoobTag(index)
+                    }}
+                    className={`inline-flex items-center h-6 px-2 rounded text-sm cursor-pointer transition-all ${
                       selectedNoobIndex === index
                         ? 'bg-primary text-primary-foreground'
                         : 'bg-muted hover:bg-muted/80'
+                    } ${draggedNoobIndex === index ? 'opacity-50' : ''} ${
+                      dragOverNoobIndex === index ? 'ring-2 ring-primary ring-offset-1' : ''
                     }`}
+                    title="单击选中，双击删除，拖拽移动"
                   >
                     <span>{tag.name}</span>
                     {tag.weight !== 1.0 && (
@@ -597,7 +728,21 @@ export default function PresetsPage() {
               </div>
             </div>
 
-            <div className="space-y-2">
+            {/* 转换按钮 */}
+            <div className="flex justify-center py-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={convertFormats}
+                disabled={(noobTags.length === 0) === (naiTags.length === 0)}
+                className="gap-2"
+              >
+                <ArrowDownUp className="h-4 w-4" />
+                转换格式
+              </Button>
+            </div>
+
+            <div className="space-y-1">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Label htmlFor="nai_format" className="text-base">NAI格式</Label>
@@ -632,7 +777,7 @@ export default function PresetsPage() {
                 </div>
               </div>
               <div
-                className="flex flex-wrap content-start gap-1.5 p-2 min-h-[80px] border rounded-md bg-background cursor-text"
+                className="flex flex-wrap content-start gap-1.5 p-2 min-h-[70px] border rounded-md bg-background cursor-text"
                 onClick={(e) => {
                   // 点击空白区域时聚焦输入框
                   const input = e.currentTarget.querySelector('input')
@@ -642,15 +787,27 @@ export default function PresetsPage() {
                 {naiTags.map((tag, index) => (
                   <div
                     key={index}
+                    draggable
+                    onDragStart={() => handleNaiDragStart(index)}
+                    onDragOver={(e) => handleNaiDragOver(e, index)}
+                    onDragEnd={handleNaiDragEnd}
+                    onDrop={(e) => handleNaiDrop(e, index)}
                     onClick={(e) => {
                       e.stopPropagation()
                       setSelectedNaiIndex(selectedNaiIndex === index ? null : index)
                     }}
-                    className={`inline-flex items-center h-6 px-2 rounded text-sm cursor-pointer transition-colors ${
+                    onDoubleClick={(e) => {
+                      e.stopPropagation()
+                      removeNaiTag(index)
+                    }}
+                    className={`inline-flex items-center h-6 px-2 rounded text-sm cursor-pointer transition-all ${
                       selectedNaiIndex === index
                         ? 'bg-primary text-primary-foreground'
                         : 'bg-muted hover:bg-muted/80'
+                    } ${draggedNaiIndex === index ? 'opacity-50' : ''} ${
+                      dragOverNaiIndex === index ? 'ring-2 ring-primary ring-offset-1' : ''
                     }`}
+                    title="单击选中，双击删除，拖拽移动"
                   >
                     <span>{tag.name}</span>
                     {tag.weight !== 1.0 && (
@@ -667,21 +824,8 @@ export default function PresetsPage() {
                 />
               </div>
             </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="description" className="text-base">描述</Label>
-              <Input
-                id="description"
-                placeholder="添加描述..."
-                value={formData.description}
-                onChange={(e) =>
-                  setFormData((prev) => ({ ...prev, description: e.target.value }))
-                }
-                className="h-10"
-              />
-            </div>
           </div>
-          <DialogFooter className="mt-4 flex justify-between items-center w-full">
+          <DialogFooter className="mt-2 flex justify-between items-center w-full">
              <div className="flex-1">
               {formData.id && (
                 <Button

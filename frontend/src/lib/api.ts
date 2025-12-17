@@ -204,39 +204,17 @@ export const toolsApi = {
         body: JSON.stringify({ artist_ids }),
       }
     ),
-
-  findDuplicates: () => request<Artist[]>('/tools/find-duplicates'),
-
-  validateImages: () =>
-    request<number[]>('/tools/validate-images', {
-      method: 'POST',
-    }),
 }
 
 // 导入导出相关
 export const importExportApi = {
   exportJson: () => request<{ categories: Category[]; artists: Artist[] }>('/export/json'),
 
-  exportExcel: () =>
-    fetch(`${API_BASE}/export/excel`, {
-      credentials: 'include',
-    }).then((res) => res.blob()),
-
   importJson: (data: { categories: Category[]; artists: Artist[] }) =>
     request('/import/json', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-
-  importExcel: (file: File) => {
-    const formData = new FormData()
-    formData.append('file', file)
-    return fetch(`${API_BASE}/import/excel`, {
-      method: 'POST',
-      credentials: 'include',
-      body: formData,
-    }).then((res) => res.json())
-  },
 }
 
 // 画师串相关

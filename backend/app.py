@@ -2,14 +2,13 @@
 Flask 后端 API 服务
 适配 React 前端的前后端分离架构
 """
-from flask import Flask, request, jsonify, send_from_directory, session, send_file, Response
+from flask import Flask, request, jsonify, send_from_directory, session, Response
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from functools import wraps
 import os
 import json
 import secrets
-import pandas as pd
 from io import BytesIO
 from pathlib import Path
 import logging
@@ -46,12 +45,11 @@ load_dotenv(ENV_FILE)
 from database import (
     init_db, get_all_categories, create_category, update_category, get_all_artists,
     get_artists_by_category, create_artist, update_artist, delete_artist,
-    get_artist_by_id, find_duplicate_artists, get_db, get_artist_categories,
-    set_artist_categories, check_artist_exists
+    get_artist_by_id, get_db, check_artist_exists
 )
 from utils import (
     auto_complete_names, format_noob, format_nai,
-    generate_danbooru_link, fetch_post_counts_batch, get_artists_without_images,
+    generate_danbooru_link, fetch_post_counts_batch,
     IMAGES_DIR
 )
 
@@ -695,37 +693,6 @@ def api_fetch_post_counts():
         logging.error(f"获取作品数量失败: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/tools/find-duplicates', methods=['GET'])
-@login_required
-def api_find_duplicates():
-    """查找重复画师"""
-    try:
-        duplicates = find_duplicate_artists()
-        return jsonify({"success": True, "data": duplicates})
-    except Exception as e:
-        logging.error(f"查找重复失败: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/api/tools/validate-images', methods=['POST'])
-@login_required
-def api_validate_images():
-    """检查缺失示例图的画师"""
-    try:
-        # 获取所有画师
-        all_artists = get_all_artists()
-
-        # 查找缺失图片的画师
-        missing_image_ids = get_artists_without_images(all_artists)
-
-        return jsonify({
-            "success": True,
-            "data": missing_image_ids,
-            "message": f"检测完成,发现 {len(missing_image_ids)} 个画师缺失示例图"
-        })
-    except Exception as e:
-        logging.error(f"检查示例图失败: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
 
 # -------------------------------
 # 导入导出 API
@@ -747,45 +714,6 @@ def api_export_json():
         return jsonify({"success": True, "data": data})
     except Exception as e:
         logging.error(f"导出JSON失败: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/api/export/excel', methods=['GET'])
-@login_required
-def api_export_excel():
-    """导出为Excel"""
-    try:
-        artists = get_all_artists()
-
-        # 转换为DataFrame
-        df_data = []
-        for artist in artists:
-            df_data.append({
-                '分类': artist.get('category_name', ''),
-                '画师名称-NOOB': artist.get('name_noob', ''),
-                '画师名称-NAI': artist.get('name_nai', ''),
-                'Danbooru链接': artist.get('danbooru_link', ''),
-                '统计': artist.get('post_count', ''),
-                '备注': artist.get('notes', ''),
-                '图例': artist.get('image_example', '')
-            })
-
-        df = pd.DataFrame(df_data)
-
-        # 保存为Excel
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, sheet_name='画师分类', index=False)
-
-        output.seek(0)
-
-        return send_file(
-            output,
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            as_attachment=True,
-            download_name='画师整理.xlsx'
-        )
-    except Exception as e:
-        logging.error(f"导出Excel失败: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/import/json', methods=['POST'])
@@ -847,69 +775,6 @@ def api_import_json():
         })
     except Exception as e:
         logging.error(f"导入JSON失败: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/api/import/excel', methods=['POST'])
-@login_required
-def api_import_excel():
-    """导入Excel文件（支持多分类，用逗号分隔）"""
-    try:
-        if 'file' not in request.files:
-            return jsonify({"success": False, "error": "未上传文件"}), 400
-
-        file = request.files['file']
-        df = pd.read_excel(file, sheet_name="画师分类")
-
-        # 处理分类
-        df['分类'] = df['分类'].ffill()
-
-        category_map = {}
-        imported_count = 0
-
-        for _, row in df.iterrows():
-            category_names = str(row.get('分类', '未分类')).strip()
-
-            # 支持多分类（用逗号、分号或顿号分隔）
-            category_list = [c.strip() for c in category_names.replace('；', ',').replace('、', ',').split(',') if c.strip()]
-
-            if not category_list:
-                category_list = ['未分类']
-
-            # 创建或获取分类ID
-            category_ids = []
-            for category_name in category_list:
-                if category_name not in category_map:
-                    categories = get_all_categories()
-                    existing = next((c for c in categories if c['name'] == category_name), None)
-                    if existing:
-                        category_map[category_name] = existing['id']
-                    else:
-                        category_id = create_category(category_name)
-                        category_map[category_name] = category_id
-
-                category_ids.append(category_map[category_name])
-
-            # 创建画师（处理空值，避免 NaN 转成 'nan' 字符串）
-            def safe_str(val):
-                return str(val) if pd.notna(val) else ''
-
-            create_artist(
-                category_ids=category_ids,
-                name_noob=safe_str(row.get('画师名称-NOOB', '')),
-                name_nai=safe_str(row.get('画师名称-NAI', '')),
-                danbooru_link=safe_str(row.get('Danbooru链接', '')),
-                post_count=int(row['统计']) if pd.notna(row.get('统计')) else None,
-                notes=safe_str(row.get('备注', '')),
-                image_example=safe_str(row.get('图例', ''))
-            )
-            imported_count += 1
-
-        return jsonify({
-            "success": True,
-            "message": f"成功导入 {imported_count} 个画师"
-        })
-    except Exception as e:
-        logging.error(f"导入Excel失败: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 # -------------------------------
