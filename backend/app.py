@@ -178,12 +178,11 @@ def api_create_category():
     try:
         data = request.json
         name = data.get('name', '').strip()
-        display_order = data.get('display_order', 0)
 
         if not name:
             return jsonify({"success": False, "error": "分类名称不能为空"}), 400
 
-        category_id = create_category(name, display_order)
+        category_id = create_category(name)
         return jsonify({"success": True, "data": {"id": category_id, "name": name}})
     except Exception as e:
         logging.error(f"创建分类失败: {e}")
@@ -196,14 +195,13 @@ def api_update_category(category_id):
     try:
         data = request.json
         name = data.get('name', '').strip()
-        display_order = data.get('display_order', 0)
 
         if not name:
             return jsonify({"success": False, "error": "分类名称不能为空"}), 400
 
-        success = update_category(category_id, name, display_order)
+        success = update_category(category_id, name)
         if success:
-            return jsonify({"success": True, "data": {"id": category_id, "name": name, "display_order": display_order}})
+            return jsonify({"success": True, "data": {"id": category_id, "name": name}})
         else:
             return jsonify({"success": False, "error": "分类不存在"}), 404
     except Exception as e:
@@ -804,7 +802,7 @@ def api_import_json():
         category_map = {}  # 旧ID -> 新ID
         for cat in categories_data:
             old_id = cat.get('id')
-            new_id = create_category(cat['name'], cat.get('display_order', 0))
+            new_id = create_category(cat['name'])
             category_map[old_id] = new_id
 
         # 导入画师

@@ -211,6 +211,22 @@ export default function ArtistsPage() {
       )
     }
 
+    // 模糊匹配：检查 query 中的字符是否按顺序出现在 text 中
+    const fuzzyCheck = (text: string | undefined) => {
+      if (!text || compactQuery.length === 0) return false
+      const compactText = compactForSearch(text)
+
+      let queryIdx = 0
+      let textIdx = 0
+      while (queryIdx < compactQuery.length && textIdx < compactText.length) {
+        if (compactQuery[queryIdx] === compactText[textIdx]) {
+          queryIdx++
+        }
+        textIdx++
+      }
+      return queryIdx === compactQuery.length
+    }
+
     return artists
       .filter((artist) => {
         // 收藏过滤
@@ -222,7 +238,8 @@ export default function ArtistsPage() {
           searchQuery === '' ||
           checkMatch(artist.name_noob) ||
           checkMatch(artist.name_nai) ||
-          checkMatch(artist.notes)
+          checkMatch(artist.notes) ||
+          fuzzyCheck(artist.notes)
 
         let matchesCategory = false
         if (selectedCategory === 'all') {
@@ -938,8 +955,16 @@ export default function ArtistsPage() {
             placeholder="搜索画师..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-9 bg-card/50 border-border/50"
+            className="pl-9 pr-8 bg-card/50 border-border/50"
           />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
         </div>
         <Select value={selectedCategory} onValueChange={setSelectedCategory}>
           <SelectTrigger className="w-40 bg-card/50 border-border/50">
@@ -1110,11 +1135,11 @@ export default function ArtistsPage() {
               )}
             </div>
           ) : viewMode === 'grid' ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 pb-4">
               {filteredArtists.map(renderGridCard)}
             </div>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-2 pb-4">
               {filteredArtists.map(renderListCard)}
             </div>
           )}

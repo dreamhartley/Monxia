@@ -126,28 +126,28 @@ def init_db():
         # 确保有"未分类"选项
         cursor.execute("SELECT id FROM categories WHERE name = '未分类'")
         if not cursor.fetchone():
-            cursor.execute("INSERT INTO categories (name, display_order) VALUES ('未分类', -1)")
+            cursor.execute("INSERT INTO categories (name) VALUES ('未分类')")
 
         conn.commit()
         print("数据库初始化成功")
 
-def create_category(name: str, display_order: int = 0) -> int:
+def create_category(name: str) -> int:
     """创建新分类"""
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO categories (name, display_order) VALUES (?, ?)",
-            (name, display_order)
+            "INSERT INTO categories (name) VALUES (?)",
+            (name,)
         )
         return cursor.lastrowid
 
-def update_category(category_id: int, name: str, display_order: int) -> bool:
+def update_category(category_id: int, name: str) -> bool:
     """更新分类信息"""
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "UPDATE categories SET name = ?, display_order = ? WHERE id = ?",
-            (name, display_order, category_id)
+            "UPDATE categories SET name = ? WHERE id = ?",
+            (name, category_id)
         )
         return cursor.rowcount > 0
 
@@ -160,7 +160,7 @@ def get_all_categories() -> List[Dict[str, Any]]:
             FROM categories c
             LEFT JOIN artist_categories ac ON c.id = ac.category_id
             GROUP BY c.id
-            ORDER BY c.display_order, c.id
+            ORDER BY c.id
         """)
         return [dict(row) for row in cursor.fetchall()]
 
@@ -173,7 +173,7 @@ def get_artist_categories(artist_id: int) -> List[Dict[str, Any]]:
             FROM categories c
             JOIN artist_categories ac ON c.id = ac.category_id
             WHERE ac.artist_id = ?
-            ORDER BY c.display_order, c.id
+            ORDER BY c.id
         """, (artist_id,))
         return [dict(row) for row in cursor.fetchall()]
 
@@ -292,11 +292,9 @@ def get_all_artists() -> List[Dict[str, Any]]:
             if artist['categories']:
                 artist['category_name'] = ', '.join([c['name'] for c in artist['categories']])
                 artist['category_id'] = artist['categories'][0]['id']  # 兼容性字段
-                artist['display_order'] = artist['categories'][0]['display_order']
             else:
                 artist['category_name'] = '未分类'
                 artist['category_id'] = None
-                artist['display_order'] = 999
 
         return artists
 

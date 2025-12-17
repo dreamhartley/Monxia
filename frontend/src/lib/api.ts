@@ -63,16 +63,16 @@ export interface Category {
 export const categoryApi = {
   getAll: () => request<Category[]>('/categories'),
 
-  create: (name: string, display_order = 0) =>
+  create: (name: string) =>
     request<Category>('/categories', {
       method: 'POST',
-      body: JSON.stringify({ name, display_order }),
+      body: JSON.stringify({ name }),
     }),
 
-  update: (id: number, name: string, display_order?: number) =>
+  update: (id: number, name: string) =>
     request<Category>(`/categories/${id}`, {
       method: 'PUT',
-      body: JSON.stringify({ name, ...(display_order !== undefined && { display_order }) }),
+      body: JSON.stringify({ name }),
     }),
 
   delete: (id: number) =>

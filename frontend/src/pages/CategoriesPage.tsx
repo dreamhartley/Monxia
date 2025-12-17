@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   Plus,
   Edit,
@@ -45,6 +45,7 @@ export default function CategoriesPage() {
   })
   const [draggedCategoryId, setDraggedCategoryId] = useState<number | null>(null)
   const [isSortDialogOpen, setIsSortDialogOpen] = useState(false)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
 
   // Dialog states
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false)
@@ -102,6 +103,20 @@ export default function CategoriesPage() {
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
     e.dataTransfer.dropEffect = 'move'
+
+    const container = scrollContainerRef.current
+    if (container) {
+      const { top, bottom } = container.getBoundingClientRect()
+      const clientY = e.clientY
+      const threshold = 60
+      const speed = 10
+
+      if (clientY < top + threshold) {
+        container.scrollTop -= speed
+      } else if (clientY > bottom - threshold) {
+        container.scrollTop += speed
+      }
+    }
   }
 
   const handleDrop = (e: React.DragEvent, targetCategoryId: number) => {
@@ -268,7 +283,7 @@ export default function CategoriesPage() {
             <p className="text-sm">点击上方按钮添加第一个分类</p>
           </div>
         ) : (
-          <div className="max-w-5xl">
+          <div className="max-w-5xl mx-auto">
             {/* 工具栏 */}
             <div className="flex items-center justify-between mb-4">
               <span className="text-sm text-muted-foreground">
@@ -286,44 +301,44 @@ export default function CategoriesPage() {
             </div>
 
             {/* 分类卡片 */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 pb-4">
               {sortedCategories.map((category) => (
               <Card
                 key={category.id}
                 className="group bg-card/80 backdrop-blur-sm border-border/50 hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5 transition-all duration-300"
               >
-                <CardHeader className="pb-2">
+                <CardHeader className="p-4 pb-2">
                   <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 rounded-lg bg-primary/10">
-                        <Tags className="h-5 w-5 text-primary" />
+                    <div className="flex items-center gap-2">
+                      <div className="p-1.5 rounded-md bg-primary/10">
+                        <Tags className="h-4 w-4 text-primary" />
                       </div>
-                      <CardTitle className="text-lg">{category.name}</CardTitle>
+                      <CardTitle className="text-base font-medium">{category.name}</CardTitle>
                     </div>
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-8 w-8"
+                        className="h-7 w-7"
                         onClick={() => openEditDialog(category)}
                       >
-                        <Edit className="h-4 w-4" />
+                        <Edit className="h-3.5 w-3.5" />
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-8 w-8 hover:bg-destructive/10 hover:text-destructive"
+                        className="h-7 w-7 hover:bg-destructive/10 hover:text-destructive"
                         onClick={() => {
                           setCurrentCategory(category)
                           setIsDeleteDialogOpen(true)
                         }}
                       >
-                        <Trash2 className="h-4 w-4" />
+                        <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </div>
                   </div>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="p-4 pt-0">
                   <div className="flex items-center justify-between text-sm">
                     <span className="text-muted-foreground">画师数量</span>
                     <span className="font-semibold text-primary">
@@ -454,13 +469,16 @@ export default function CategoriesPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="py-4">
-            <div className="space-y-1 max-h-[300px] overflow-y-auto">
+            <div
+              ref={scrollContainerRef}
+              className="space-y-1 max-h-[300px] overflow-y-auto"
+              onDragOver={handleDragOver}
+            >
               {sortableCategories.map((cat) => (
                 <div
                   key={cat.id}
                   draggable
                   onDragStart={(e) => handleDragStart(e, cat.id)}
-                  onDragOver={handleDragOver}
                   onDrop={(e) => handleDrop(e, cat.id)}
                   onDragEnd={handleDragEnd}
                   className={`flex items-center gap-2 px-3 py-2 rounded-md cursor-grab bg-secondary/30 hover:bg-secondary/50 transition-colors ${
