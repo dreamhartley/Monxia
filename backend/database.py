@@ -117,26 +117,12 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
                 description TEXT,
-                artist_ids TEXT NOT NULL,
                 noob_text TEXT DEFAULT '',
                 nai_text TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-
-        # 迁移：添加 noob_text 和 nai_text 字段
-        try:
-            cursor.execute("SELECT noob_text FROM artist_presets LIMIT 1")
-        except sqlite3.OperationalError:
-            cursor.execute("ALTER TABLE artist_presets ADD COLUMN noob_text TEXT DEFAULT ''")
-            print("已添加 noob_text 字段到 artist_presets 表")
-
-        try:
-            cursor.execute("SELECT nai_text FROM artist_presets LIMIT 1")
-        except sqlite3.OperationalError:
-            cursor.execute("ALTER TABLE artist_presets ADD COLUMN nai_text TEXT DEFAULT ''")
-            print("已添加 nai_text 字段到 artist_presets 表")
 
         # 确保有"未分类"选项
         cursor.execute("SELECT id FROM categories WHERE name = '未分类'")

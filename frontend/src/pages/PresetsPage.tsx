@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect } from 'react'
 import type { KeyboardEvent } from 'react'
 import {
   Plus,
@@ -7,7 +7,6 @@ import {
   Loader2,
   List,
   Copy,
-  Users,
   AlertCircle,
   Edit2,
 } from 'lucide-react'
@@ -33,7 +32,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { presetApi, artistApi, type Preset, type Artist } from '@/lib/api'
+import { presetApi, type Preset } from '@/lib/api'
 
 // 画师标签类型
 interface ArtistTag {
@@ -160,7 +159,6 @@ function generateNaiStr(tags: ArtistTag[]): string {
 
 export default function PresetsPage() {
   const [presets, setPresets] = useState<Preset[]>([])
-  const [artists, setArtists] = useState<Artist[]>([])
   const [loading, setLoading] = useState(true)
 
   // Dialog states
@@ -174,7 +172,6 @@ export default function PresetsPage() {
     id: undefined as number | undefined,
     name: '',
     description: '',
-    artist_ids: [] as number[],
     noob_str: '',
     nai_str: '',
   })
@@ -187,13 +184,6 @@ export default function PresetsPage() {
   const [selectedNoobIndex, setSelectedNoobIndex] = useState<number | null>(null)
   const [selectedNaiIndex, setSelectedNaiIndex] = useState<number | null>(null)
 
-  // Artist map for quick lookup
-  const artistMap = useMemo(() => {
-    const map = new Map<number, Artist>()
-    artists.forEach((artist) => map.set(artist.id, artist))
-    return map
-  }, [artists])
-
   useEffect(() => {
     loadData()
   }, [])
@@ -201,15 +191,9 @@ export default function PresetsPage() {
   const loadData = async () => {
     setLoading(true)
     try {
-      const [presetsRes, artistsRes] = await Promise.all([
-        presetApi.getAll(),
-        artistApi.getAll(),
-      ])
+      const presetsRes = await presetApi.getAll()
       if (presetsRes.success && presetsRes.data) {
         setPresets(presetsRes.data)
-      }
-      if (artistsRes.success && artistsRes.data) {
-        setArtists(artistsRes.data)
       }
     } catch (error) {
       console.error('Failed to load data:', error)
@@ -219,7 +203,7 @@ export default function PresetsPage() {
   }
 
   const resetForm = () => {
-    setFormData({ id: undefined, name: '', description: '', artist_ids: [], noob_str: '', nai_str: '' })
+    setFormData({ id: undefined, name: '', description: '', noob_str: '', nai_str: '' })
     setNoobTags([])
     setNaiTags([])
     setNoobInput('')
@@ -371,29 +355,8 @@ export default function PresetsPage() {
     const noobStr = generateNoobStr(noobTags)
     const naiStr = generateNaiStr(naiTags)
 
-    // Parse artists from strings if provided
-    let finalArtistIds = [...formData.artist_ids]
-
-    if (noobStr || naiStr) {
-      const noobNames = noobTags.map(t => t.name)
-      const naiNames = naiTags.map(t => t.name)
-
-      const matchedIds = new Set<number>(finalArtistIds)
-
-      artists.forEach(artist => {
-        if (artist.name_noob && noobNames.some(n => artist.name_noob.toLowerCase() === n.toLowerCase())) {
-          matchedIds.add(artist.id)
-        }
-        if (artist.name_nai && naiNames.some(n => artist.name_nai.toLowerCase() === n.toLowerCase())) {
-          matchedIds.add(artist.id)
-        }
-      })
-
-      finalArtistIds = Array.from(matchedIds)
-    }
-
-    if (finalArtistIds.length === 0 && noobTags.length === 0 && naiTags.length === 0) {
-      alert('请至少输入画师或选择一个有效的画师')
+    if (noobTags.length === 0 && naiTags.length === 0) {
+      alert('请至少输入一个画师')
       return
     }
 
@@ -405,7 +368,6 @@ export default function PresetsPage() {
           formData.id,
           formData.name,
           formData.description,
-          finalArtistIds,
           noobStr,
           naiStr
         )
@@ -413,7 +375,6 @@ export default function PresetsPage() {
         res = await presetApi.create(
           formData.name,
           formData.description,
-          finalArtistIds,
           noobStr,
           naiStr
         )
@@ -455,15 +416,6 @@ export default function PresetsPage() {
     }
   }
 
-  const getPresetArtists = (preset: Preset): Artist[] => {
-    try {
-      const ids = JSON.parse(preset.artist_ids) as number[]
-      return ids.map((id) => artistMap.get(id)).filter(Boolean) as Artist[]
-    } catch {
-      return []
-    }
-  }
-
   const copyTextToClipboard = (text: string) => {
     navigator.clipboard.writeText(text)
   }
@@ -502,9 +454,7 @@ export default function PresetsPage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 max-w-6xl">
-            {presets.map((preset) => {
-              const presetArtists = getPresetArtists(preset)
-              return (
+            {presets.map((preset) => (
                 <Card
                   key={preset.id}
                   className="group bg-card/80 backdrop-blur-sm border-border/50 hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5 transition-all duration-300"
@@ -515,13 +465,7 @@ export default function PresetsPage() {
                         <div className="p-2 rounded-lg bg-primary/10">
                           <List className="h-5 w-5 text-primary" />
                         </div>
-                        <div>
-                          <CardTitle className="text-lg">{preset.name}</CardTitle>
-                          <p className="text-sm text-muted-foreground flex items-center gap-1">
-                            <Users className="h-3 w-3" />
-                            {presetArtists.length} 个画师
-                          </p>
-                        </div>
+                        <CardTitle className="text-lg">{preset.name}</CardTitle>
                       </div>
                       <Button
                         variant="ghost"
@@ -532,7 +476,6 @@ export default function PresetsPage() {
                             id: preset.id,
                             name: preset.name,
                             description: preset.description,
-                            artist_ids: JSON.parse(preset.artist_ids),
                             noob_str: preset.noob_text || '',
                             nai_str: preset.nai_text || '',
                           })
@@ -558,8 +501,7 @@ export default function PresetsPage() {
                     )}
                   </CardContent>
                 </Card>
-              )
-            })}
+              ))}
           </div>
         )}
       </ScrollArea>
@@ -619,7 +561,7 @@ export default function PresetsPage() {
                 </div>
               </div>
               <div
-                className="flex flex-wrap items-center gap-1.5 p-2 min-h-[80px] border rounded-md bg-background cursor-text"
+                className="flex flex-wrap content-start gap-1.5 p-2 min-h-[80px] border rounded-md bg-background cursor-text"
                 onClick={(e) => {
                   // 点击空白区域时聚焦输入框
                   const input = e.currentTarget.querySelector('input')
@@ -633,7 +575,7 @@ export default function PresetsPage() {
                       e.stopPropagation()
                       setSelectedNoobIndex(selectedNoobIndex === index ? null : index)
                     }}
-                    className={`inline-flex items-center px-2 py-0.5 rounded text-sm cursor-pointer transition-colors ${
+                    className={`inline-flex items-center h-6 px-2 rounded text-sm cursor-pointer transition-colors ${
                       selectedNoobIndex === index
                         ? 'bg-primary text-primary-foreground'
                         : 'bg-muted hover:bg-muted/80'
@@ -650,7 +592,7 @@ export default function PresetsPage() {
                   value={noobInput}
                   onChange={(e) => setNoobInput(e.target.value)}
                   onKeyDown={handleNoobKeyDown}
-                  className="flex-1 min-w-[120px] bg-transparent border-0 outline-none text-sm h-7"
+                  className="flex-1 min-w-[120px] bg-transparent border-0 outline-none text-sm h-6"
                 />
               </div>
             </div>
@@ -690,7 +632,7 @@ export default function PresetsPage() {
                 </div>
               </div>
               <div
-                className="flex flex-wrap items-center gap-1.5 p-2 min-h-[80px] border rounded-md bg-background cursor-text"
+                className="flex flex-wrap content-start gap-1.5 p-2 min-h-[80px] border rounded-md bg-background cursor-text"
                 onClick={(e) => {
                   // 点击空白区域时聚焦输入框
                   const input = e.currentTarget.querySelector('input')
@@ -704,7 +646,7 @@ export default function PresetsPage() {
                       e.stopPropagation()
                       setSelectedNaiIndex(selectedNaiIndex === index ? null : index)
                     }}
-                    className={`inline-flex items-center px-2 py-0.5 rounded text-sm cursor-pointer transition-colors ${
+                    className={`inline-flex items-center h-6 px-2 rounded text-sm cursor-pointer transition-colors ${
                       selectedNaiIndex === index
                         ? 'bg-primary text-primary-foreground'
                         : 'bg-muted hover:bg-muted/80'
@@ -721,7 +663,7 @@ export default function PresetsPage() {
                   value={naiInput}
                   onChange={(e) => setNaiInput(e.target.value)}
                   onKeyDown={handleNaiKeyDown}
-                  className="flex-1 min-w-[120px] bg-transparent border-0 outline-none text-sm h-7"
+                  className="flex-1 min-w-[120px] bg-transparent border-0 outline-none text-sm h-6"
                 />
               </div>
             </div>

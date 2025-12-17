@@ -938,22 +938,18 @@ def api_create_preset():
         data = request.json
         name = data.get('name', '').strip()
         description = data.get('description', '').strip()
-        artist_ids = data.get('artist_ids', [])
         noob_text = data.get('noob_text', '').strip()
         nai_text = data.get('nai_text', '').strip()
 
         if not name:
             return jsonify({"success": False, "error": "名称不能为空"}), 400
-            
-        # 允许没有 artist_ids，只要有文本内容即可，但为了兼容性，可以允许空 artist_ids
-        # 如果前端解析了 ID，还是保存一下以便关联
 
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO artist_presets (name, description, artist_ids, noob_text, nai_text)
-                VALUES (?, ?, ?, ?, ?)
-            """, (name, description, json.dumps(artist_ids), noob_text, nai_text))
+                INSERT INTO artist_presets (name, description, noob_text, nai_text)
+                VALUES (?, ?, ?, ?)
+            """, (name, description, noob_text, nai_text))
 
             preset_id = cursor.lastrowid
 
@@ -970,7 +966,6 @@ def api_update_preset(preset_id):
         data = request.json
         name = data.get('name', '').strip()
         description = data.get('description', '').strip()
-        artist_ids = data.get('artist_ids', [])
         noob_text = data.get('noob_text', '').strip()
         nai_text = data.get('nai_text', '').strip()
 
@@ -981,10 +976,10 @@ def api_update_preset(preset_id):
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE artist_presets
-                SET name = ?, description = ?, artist_ids = ?, noob_text = ?, nai_text = ?, updated_at = CURRENT_TIMESTAMP
+                SET name = ?, description = ?, noob_text = ?, nai_text = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
-            """, (name, description, json.dumps(artist_ids), noob_text, nai_text, preset_id))
-            
+            """, (name, description, noob_text, nai_text, preset_id))
+
             if cursor.rowcount > 0:
                 return jsonify({"success": True})
             else:
