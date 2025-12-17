@@ -5,7 +5,7 @@ import {
   Tags,
   List,
   Wrench,
-  FileUp,
+  Settings,
   LogOut,
   ChevronLeft,
   ChevronRight,
@@ -30,7 +30,7 @@ const navItems = [
   { icon: Tags, label: '分类管理', path: '/categories' },
   { icon: List, label: '画师串', path: '/presets' },
   { icon: Wrench, label: '工具', path: '/tools' },
-  { icon: FileUp, label: '导入/导出', path: '/import-export' },
+  { icon: Settings, label: '设置', path: '/settings' },
 ]
 
 export function MainLayout({ children }: MainLayoutProps) {

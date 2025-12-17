@@ -7,13 +7,14 @@ import {
   CheckCircle2,
   AlertCircle,
   Info,
+  Settings,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { importExportApi } from '@/lib/api'
 
-export default function ImportExportPage() {
+export default function SettingsPage() {
   const [exportLoading, setExportLoading] = useState(false)
   const [importLoading, setImportLoading] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
@@ -97,15 +98,26 @@ export default function ImportExportPage() {
     <div className="flex-1 flex flex-col h-full">
       {/* 顶部标题栏 */}
       <header className="shrink-0 h-16 border-b border-border/50 bg-card/30 backdrop-blur-sm px-6 flex items-center">
-        <div>
-          <h1 className="text-xl font-semibold text-foreground">导入/导出</h1>
-          <p className="text-sm text-muted-foreground">备份和恢复你的画师数据</p>
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-lg bg-muted/50">
+            <Settings className="h-5 w-5 text-muted-foreground" />
+          </div>
+          <div>
+            <h1 className="text-xl font-semibold text-foreground">设置</h1>
+            <p className="text-sm text-muted-foreground">管理应用配置和数据</p>
+          </div>
         </div>
       </header>
 
       {/* 内容区域 */}
       <ScrollArea className="flex-1 p-6">
-        <div className="max-w-3xl space-y-6">
+        <div className="max-w-3xl mx-auto space-y-6">
+          {/* 导入/导出部分标题 */}
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-medium text-foreground">数据备份</h2>
+            <span className="text-sm text-muted-foreground">· 导入/导出</span>
+          </div>
+
           {/* 消息提示 */}
           {message && (
             <div

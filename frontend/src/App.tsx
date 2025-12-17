@@ -6,7 +6,7 @@ import ArtistsPage from '@/pages/ArtistsPage'
 import CategoriesPage from '@/pages/CategoriesPage'
 import PresetsPage from '@/pages/PresetsPage'
 import ToolsPage from '@/pages/ToolsPage'
-import ImportExportPage from '@/pages/ImportExportPage'
+import SettingsPage from '@/pages/SettingsPage'
 
 // 受保护的路由组件
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -97,10 +97,10 @@ function AppRoutes() {
         }
       />
       <Route
-        path="/import-export"
+        path="/settings"
         element={
           <ProtectedRoute>
-            <ImportExportPage />
+            <SettingsPage />
           </ProtectedRoute>
         }
       />
