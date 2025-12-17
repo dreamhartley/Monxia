@@ -65,6 +65,14 @@ function AppRoutes() {
         }
       />
       <Route
+        path="/artists"
+        element={
+          <ProtectedRoute>
+            <ArtistsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/categories"
         element={
           <ProtectedRoute>

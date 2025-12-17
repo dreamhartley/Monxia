@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Plus,
   Edit,
@@ -35,6 +36,7 @@ import {
 import { categoryApi, type Category } from '@/lib/api'
 
 export default function CategoriesPage() {
+  const navigate = useNavigate()
   const [categories, setCategories] = useState<Category[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -305,7 +307,8 @@ export default function CategoriesPage() {
               {sortedCategories.map((category) => (
               <Card
                 key={category.id}
-                className="group bg-card/80 backdrop-blur-sm border-border/50 hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5 transition-all duration-300"
+                className="group bg-card/80 backdrop-blur-sm border-border/50 hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5 transition-all duration-300 cursor-pointer"
+                onClick={() => navigate(`/artists?category=${category.id}`)}
               >
                 <CardHeader className="p-4 pb-2">
                   <div className="flex items-start justify-between">
@@ -320,7 +323,10 @@ export default function CategoriesPage() {
                         variant="ghost"
                         size="icon"
                         className="h-7 w-7"
-                        onClick={() => openEditDialog(category)}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          openEditDialog(category)
+                        }}
                       >
                         <Edit className="h-3.5 w-3.5" />
                       </Button>
@@ -328,7 +334,8 @@ export default function CategoriesPage() {
                         variant="ghost"
                         size="icon"
                         className="h-7 w-7 hover:bg-destructive/10 hover:text-destructive"
-                        onClick={() => {
+                        onClick={(e) => {
+                          e.stopPropagation()
                           setCurrentCategory(category)
                           setIsDeleteDialogOpen(true)
                         }}

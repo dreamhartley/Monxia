@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   Plus,
   Search,
@@ -18,6 +19,7 @@ import {
   X,
   ArrowUpDown,
   Star,
+  ArrowUp,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
@@ -77,11 +79,12 @@ type ViewMode = 'grid' | 'list'
 type SortOption = 'date_desc' | 'date_asc' | 'count_desc' | 'count_asc'
 
 export default function ArtistsPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [artists, setArtists] = useState<Artist[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
-  const [selectedCategory, setSelectedCategory] = useState<string>('all')
+  const [selectedCategory, setSelectedCategory] = useState<string>(searchParams.get('category') || 'all')
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     const saved = localStorage.getItem('artist_view_mode')
     return (saved === 'grid' || saved === 'list') ? saved : 'grid'
@@ -97,6 +100,20 @@ export default function ArtistsPage() {
     return saved ? JSON.parse(saved) : []
   })
 
+  // 回到顶部功能
+  const scrollAreaRef = useRef<HTMLDivElement>(null)
+  const [showBackToTop, setShowBackToTop] = useState(false)
+
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLDivElement
+    setShowBackToTop(target.scrollTop > 300)
+  }, [])
+
+  const scrollToTop = useCallback(() => {
+    const viewport = scrollAreaRef.current?.querySelector('[data-radix-scroll-area-viewport]')
+    viewport?.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [])
+
   // 监听 localStorage 变化（从 CategoriesPage 同步排序）
   useEffect(() => {
     const handleStorageChange = (e: StorageEvent) => {
@@ -107,6 +124,28 @@ export default function ArtistsPage() {
     window.addEventListener('storage', handleStorageChange)
     return () => window.removeEventListener('storage', handleStorageChange)
   }, [])
+
+  // 监听 URL 参数变化
+  useEffect(() => {
+    const categoryParam = searchParams.get('category')
+    if (categoryParam) {
+      setSelectedCategory(categoryParam)
+    } else {
+      setSelectedCategory('all')
+    }
+  }, [searchParams])
+
+  // 处理分类切换
+  const handleCategoryChange = (value: string) => {
+    setSelectedCategory(value)
+    const newParams = new URLSearchParams(searchParams)
+    if (value === 'all') {
+      newParams.delete('category')
+    } else {
+      newParams.set('category', value)
+    }
+    setSearchParams(newParams)
+  }
 
   // Dialog states
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false)
@@ -936,159 +975,160 @@ export default function ArtistsPage() {
         </Button>
       </header>
 
-      {/* 筛选栏 */}
-      <div className="shrink-0 px-6 py-4">
-        <div className="max-w-6xl mx-auto flex gap-3 items-center">
-        {/* 收藏筛选按钮 */}
-        <Button
-          variant={showFavoritesOnly ? 'default' : 'outline'}
-          size="icon"
-          onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
-          className="shrink-0"
-          title={showFavoritesOnly ? '显示全部' : '仅显示收藏'}
-        >
-          <Star className={`h-4 w-4 ${showFavoritesOnly ? 'fill-current' : ''}`} />
-        </Button>
-        <div className="relative flex-1 max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="搜索画师..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-9 pr-8 bg-card/50 border-border/50"
-          />
-          {searchQuery && (
-            <button
-              onClick={() => setSearchQuery('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          )}
-        </div>
-        <Select value={selectedCategory} onValueChange={setSelectedCategory}>
-          <SelectTrigger className="w-40 bg-card/50 border-border/50">
-            <Filter className="h-4 w-4 mr-2 text-muted-foreground" />
-            <SelectValue placeholder="筛选分类" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">全部分类</SelectItem>
-            <SelectItem value="incomplete">待补全</SelectItem>
-            {sortedCategories.map((cat) => (
-              <SelectItem key={cat.id} value={cat.id.toString()}>
-                {cat.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        {/* 排序 */}
-        <Select value={sortOption} onValueChange={(v) => setSortOption(v as SortOption)}>
-          <SelectTrigger className="w-40 bg-card/50 border-border/50">
-            <ArrowUpDown className="h-4 w-4 mr-2 text-muted-foreground" />
-            <SelectValue placeholder="排序方式" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="count_desc">作品数 ↓</SelectItem>
-            <SelectItem value="count_asc">作品数 ↑</SelectItem>
-            <SelectItem value="date_desc">添加时间 ↓</SelectItem>
-            <SelectItem value="date_asc">添加时间 ↑</SelectItem>
-          </SelectContent>
-        </Select>
-
-        {/* 视图切换 */}
-        <div className="flex border rounded-md bg-card/50 border-border/50">
-          <Button
-            variant={viewMode === 'grid' ? 'secondary' : 'ghost'}
-            size="icon"
-            className="h-9 w-9 rounded-r-none"
-            onClick={() => setViewMode('grid')}
-          >
-            <LayoutGrid className="h-4 w-4" />
-          </Button>
-          <Button
-            variant={viewMode === 'list' ? 'secondary' : 'ghost'}
-            size="icon"
-            className="h-9 w-9 rounded-l-none"
-            onClick={() => setViewMode('list')}
-          >
-            <List className="h-4 w-4" />
-          </Button>
-        </div>
-
-        <Button variant="outline" onClick={loadData} className="gap-2">
-          <RefreshCw className="h-4 w-4" />
-          刷新
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => {
-            if (!confirm('确定要对所有画师进行自动数据补全吗？这可能需要一些时间。')) return
-
-            // 打开进度弹窗
-            setAutoCompleteProgress({
-              isOpen: true,
-              phase: 'names',
-              current: 0,
-              total: 0,
-              artistName: '准备中...',
-              message: '正在初始化...',
-            })
-
-            // 使用流式API
-            toolsApi.autoCompleteAllStream((data: AutoCompleteProgress) => {
-              if (data.type === 'start') {
-                setAutoCompleteProgress((prev) => ({
-                  ...prev,
-                  total: data.total || 0,
-                  message: `共 ${data.total} 个画师`,
-                }))
-              } else if (data.type === 'progress') {
-                setAutoCompleteProgress((prev) => ({
-                  ...prev,
-                  phase: data.phase || prev.phase,
-                  current: data.current || 0,
-                  total: data.total || prev.total,
-                  artistName: data.artist_name || '',
-                  message:
-                    data.phase === 'names'
-                      ? `正在补全名称信息 (${data.current}/${data.total})`
-                      : `正在获取作品数据 (${data.current}/${data.total})`,
-                }))
-              } else if (data.type === 'phase') {
-                setAutoCompleteProgress((prev) => ({
-                  ...prev,
-                  phase: data.phase || prev.phase,
-                  current: 0,
-                  total: data.total || 0,
-                  message: data.message || '',
-                }))
-              } else if (data.type === 'complete') {
-                setAutoCompleteProgress((prev) => ({
-                  ...prev,
-                  isOpen: false,
-                }))
-                alert(data.message || '补全完成')
-                loadData()
-              } else if (data.type === 'error') {
-                setAutoCompleteProgress((prev) => ({
-                  ...prev,
-                  isOpen: false,
-                }))
-                alert(data.error || '补全失败')
-              }
-            })
-          }}
-          className="gap-2"
-        >
-          <Sparkles className="h-4 w-4" />
-          一键自动补全
-        </Button>
-        </div>
-      </div>
-
       {/* 画师列表 */}
-      <ScrollArea className="flex-1 px-6 pb-6">
+      <ScrollArea className="flex-1" ref={scrollAreaRef} onScrollCapture={handleScroll}>
+        {/* 筛选栏 - 放在 ScrollArea 内部实现毛玻璃效果 */}
+        <div className="px-6 py-4 bg-background/60 backdrop-blur-md border-b border-border/30 sticky top-0 z-10">
+          <div className="max-w-6xl mx-auto flex gap-3 items-center">
+          {/* 收藏筛选按钮 */}
+          <Button
+            variant={showFavoritesOnly ? 'default' : 'outline'}
+            size="icon"
+            onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
+            className="shrink-0"
+            title={showFavoritesOnly ? '显示全部' : '仅显示收藏'}
+          >
+            <Star className={`h-4 w-4 ${showFavoritesOnly ? 'fill-current' : ''}`} />
+          </Button>
+          <div className="relative flex-1 max-w-sm">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="搜索画师..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-9 pr-8 bg-card/50 border-border/50"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+          <Select value={selectedCategory} onValueChange={handleCategoryChange}>
+            <SelectTrigger className="w-40 bg-card/50 border-border/50">
+              <Filter className="h-4 w-4 mr-2 text-muted-foreground" />
+              <SelectValue placeholder="筛选分类" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部分类</SelectItem>
+              <SelectItem value="incomplete">待补全</SelectItem>
+              {sortedCategories.map((cat) => (
+                <SelectItem key={cat.id} value={cat.id.toString()}>
+                  {cat.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          {/* 排序 */}
+          <Select value={sortOption} onValueChange={(v) => setSortOption(v as SortOption)}>
+            <SelectTrigger className="w-40 bg-card/50 border-border/50">
+              <ArrowUpDown className="h-4 w-4 mr-2 text-muted-foreground" />
+              <SelectValue placeholder="排序方式" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="count_desc">作品数 ↓</SelectItem>
+              <SelectItem value="count_asc">作品数 ↑</SelectItem>
+              <SelectItem value="date_desc">添加时间 ↓</SelectItem>
+              <SelectItem value="date_asc">添加时间 ↑</SelectItem>
+            </SelectContent>
+          </Select>
+
+          {/* 视图切换 */}
+          <div className="flex border rounded-md bg-card/50 border-border/50">
+            <Button
+              variant={viewMode === 'grid' ? 'secondary' : 'ghost'}
+              size="icon"
+              className="h-9 w-9 rounded-r-none"
+              onClick={() => setViewMode('grid')}
+            >
+              <LayoutGrid className="h-4 w-4" />
+            </Button>
+            <Button
+              variant={viewMode === 'list' ? 'secondary' : 'ghost'}
+              size="icon"
+              className="h-9 w-9 rounded-l-none"
+              onClick={() => setViewMode('list')}
+            >
+              <List className="h-4 w-4" />
+            </Button>
+          </div>
+
+          <Button variant="outline" onClick={loadData} className="gap-2">
+            <RefreshCw className="h-4 w-4" />
+            刷新
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              if (!confirm('确定要对所有画师进行自动数据补全吗？这可能需要一些时间。')) return
+
+              // 打开进度弹窗
+              setAutoCompleteProgress({
+                isOpen: true,
+                phase: 'names',
+                current: 0,
+                total: 0,
+                artistName: '准备中...',
+                message: '正在初始化...',
+              })
+
+              // 使用流式API
+              toolsApi.autoCompleteAllStream((data: AutoCompleteProgress) => {
+                if (data.type === 'start') {
+                  setAutoCompleteProgress((prev) => ({
+                    ...prev,
+                    total: data.total || 0,
+                    message: `共 ${data.total} 个画师`,
+                  }))
+                } else if (data.type === 'progress') {
+                  setAutoCompleteProgress((prev) => ({
+                    ...prev,
+                    phase: data.phase || prev.phase,
+                    current: data.current || 0,
+                    total: data.total || prev.total,
+                    artistName: data.artist_name || '',
+                    message:
+                      data.phase === 'names'
+                        ? `正在补全名称信息 (${data.current}/${data.total})`
+                        : `正在获取作品数据 (${data.current}/${data.total})`,
+                  }))
+                } else if (data.type === 'phase') {
+                  setAutoCompleteProgress((prev) => ({
+                    ...prev,
+                    phase: data.phase || prev.phase,
+                    current: 0,
+                    total: data.total || 0,
+                    message: data.message || '',
+                  }))
+                } else if (data.type === 'complete') {
+                  setAutoCompleteProgress((prev) => ({
+                    ...prev,
+                    isOpen: false,
+                  }))
+                  alert(data.message || '补全完成')
+                  loadData()
+                } else if (data.type === 'error') {
+                  setAutoCompleteProgress((prev) => ({
+                    ...prev,
+                    isOpen: false,
+                  }))
+                  alert(data.error || '补全失败')
+                }
+              })
+            }}
+            className="gap-2"
+          >
+            <Sparkles className="h-4 w-4" />
+            一键自动补全
+          </Button>
+          </div>
+        </div>
+
+        <div className="px-6 pb-6">
         <div className="max-w-6xl mx-auto">
           {loading ? (
             <div className="flex items-center justify-center h-64">
@@ -1144,7 +1184,28 @@ export default function ArtistsPage() {
             </div>
           )}
         </div>
+        </div>
       </ScrollArea>
+
+      {/* 回到顶部按钮 */}
+      <AnimatePresence>
+        {showBackToTop && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.8 }}
+            className="fixed bottom-6 right-6 z-20"
+          >
+            <Button
+              size="icon"
+              onClick={scrollToTop}
+              className="h-10 w-10 rounded-full shadow-lg bg-primary/90 hover:bg-primary backdrop-blur-sm"
+            >
+              <ArrowUp className="h-5 w-5" />
+            </Button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* 添加画师对话框 */}
       <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
