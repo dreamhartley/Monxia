@@ -74,7 +74,7 @@ import {
 } from '@/lib/api'
 import { Progress } from '@/components/ui/progress'
 import { PRESET_DRAFT_KEY, type PresetDraft, type ArtistTag, formatNoob, formatNai } from './PresetsPage'
-import { ChevronDown, Users } from 'lucide-react'
+import { ChevronDown, Users, User } from 'lucide-react'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 
 const API_BASE = '/api'
@@ -1392,7 +1392,7 @@ export default function ArtistsPage() {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onClick={openAddDialog}>
-              <Plus className="h-4 w-4 mr-2" />
+              <User className="h-4 w-4 mr-2" />
               单个添加
             </DropdownMenuItem>
             <DropdownMenuItem onClick={() => {
