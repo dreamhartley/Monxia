@@ -2,10 +2,15 @@
 数据库模型和初始化
 """
 import sqlite3
+import uuid
+import os
 from contextlib import contextmanager
 from typing import Optional, List, Dict, Any
+from pathlib import Path
 
-DATABASE_PATH = "artists.db"
+# 数据库文件路径（支持通过环境变量配置，默认为 backend 目录）
+DATA_DIR = Path(os.environ.get('DATA_DIR', Path(__file__).parent))
+DATABASE_PATH = DATA_DIR / "artists.db"
 
 @contextmanager
 def get_db():
@@ -40,6 +45,7 @@ def init_db():
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS artists (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uuid TEXT UNIQUE,
                 name_noob TEXT,
                 name_nai TEXT,
                 danbooru_link TEXT,
@@ -58,6 +64,25 @@ def init_db():
         except sqlite3.OperationalError:
             cursor.execute("ALTER TABLE artists ADD COLUMN skip_danbooru INTEGER DEFAULT 0")
             print("已添加 skip_danbooru 字段到 artists 表")
+
+        # 添加 uuid 字段（如果表已存在但没有此字段）
+        try:
+            cursor.execute("SELECT uuid FROM artists LIMIT 1")
+        except sqlite3.OperationalError:
+            # SQLite 不支持在 ADD COLUMN 中使用 UNIQUE 约束（除非是空表），所以先添加普通列
+            cursor.execute("ALTER TABLE artists ADD COLUMN uuid TEXT")
+            
+            # 为现有记录生成UUID
+            import uuid
+            cursor.execute("SELECT id FROM artists WHERE uuid IS NULL")
+            rows = cursor.fetchall()
+            for row in rows:
+                new_uuid = str(uuid.uuid4())
+                cursor.execute("UPDATE artists SET uuid = ? WHERE id = ?", (new_uuid, row['id']))
+            
+            # 创建唯一索引
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_uuid ON artists(uuid)")
+            print("已添加 uuid 字段到 artists 表并更新现有记录")
 
         # 创建画师-分类关联表（多对多）
         cursor.execute("""
@@ -94,7 +119,8 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
                 description TEXT,
-                artist_ids TEXT NOT NULL,
+                noob_text TEXT DEFAULT '',
+                nai_text TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -103,28 +129,28 @@ def init_db():
         # 确保有"未分类"选项
         cursor.execute("SELECT id FROM categories WHERE name = '未分类'")
         if not cursor.fetchone():
-            cursor.execute("INSERT INTO categories (name, display_order) VALUES ('未分类', -1)")
+            cursor.execute("INSERT INTO categories (name) VALUES ('未分类')")
 
         conn.commit()
         print("数据库初始化成功")
 
-def create_category(name: str, display_order: int = 0) -> int:
+def create_category(name: str) -> int:
     """创建新分类"""
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO categories (name, display_order) VALUES (?, ?)",
-            (name, display_order)
+            "INSERT INTO categories (name) VALUES (?)",
+            (name,)
         )
         return cursor.lastrowid
 
-def update_category(category_id: int, name: str, display_order: int) -> bool:
+def update_category(category_id: int, name: str) -> bool:
     """更新分类信息"""
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "UPDATE categories SET name = ?, display_order = ? WHERE id = ?",
-            (name, display_order, category_id)
+            "UPDATE categories SET name = ? WHERE id = ?",
+            (name, category_id)
         )
         return cursor.rowcount > 0
 
@@ -137,7 +163,7 @@ def get_all_categories() -> List[Dict[str, Any]]:
             FROM categories c
             LEFT JOIN artist_categories ac ON c.id = ac.category_id
             GROUP BY c.id
-            ORDER BY c.display_order, c.id
+            ORDER BY c.id
         """)
         return [dict(row) for row in cursor.fetchall()]
 
@@ -150,7 +176,7 @@ def get_artist_categories(artist_id: int) -> List[Dict[str, Any]]:
             FROM categories c
             JOIN artist_categories ac ON c.id = ac.category_id
             WHERE ac.artist_id = ?
-            ORDER BY c.display_order, c.id
+            ORDER BY c.id
         """, (artist_id,))
         return [dict(row) for row in cursor.fetchall()]
 
@@ -202,12 +228,15 @@ def create_artist(category_ids: List[int], name_noob: str = "", name_nai: str = 
     with get_db() as conn:
         cursor = conn.cursor()
 
+        # 生成UUID
+        artist_uuid = str(uuid.uuid4())
+
         # 插入画师基本信息
         cursor.execute("""
             INSERT INTO artists
-            (name_noob, name_nai, danbooru_link, post_count, notes, image_example, skip_danbooru)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (name_noob, name_nai, danbooru_link, post_count, notes, image_example, 1 if skip_danbooru else 0))
+            (uuid, name_noob, name_nai, danbooru_link, post_count, notes, image_example, skip_danbooru)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (artist_uuid, name_noob, name_nai, danbooru_link, post_count, notes, image_example, 1 if skip_danbooru else 0))
         artist_id = cursor.lastrowid
 
         # 添加分类关联
@@ -266,11 +295,9 @@ def get_all_artists() -> List[Dict[str, Any]]:
             if artist['categories']:
                 artist['category_name'] = ', '.join([c['name'] for c in artist['categories']])
                 artist['category_id'] = artist['categories'][0]['id']  # 兼容性字段
-                artist['display_order'] = artist['categories'][0]['display_order']
             else:
                 artist['category_name'] = '未分类'
                 artist['category_id'] = None
-                artist['display_order'] = 999
 
         return artists
 
@@ -345,6 +372,37 @@ def get_artist_by_id(artist_id: int) -> Optional[Dict[str, Any]]:
 
         return artist
 
+def check_artist_exists(name_noob: str = "", name_nai: str = "", danbooru_link: str = "") -> Optional[Dict[str, Any]]:
+    """检查画师是否已存在"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        conditions = []
+        params = []
+        
+        if name_noob:
+            conditions.append("name_noob = ?")
+            params.append(name_noob)
+            
+        if name_nai:
+            conditions.append("name_nai = ?")
+            params.append(name_nai)
+            
+        if danbooru_link:
+            conditions.append("danbooru_link = ?")
+            params.append(danbooru_link)
+            
+        if not conditions:
+            return None
+            
+        query = f"SELECT * FROM artists WHERE {' OR '.join(conditions)} LIMIT 1"
+        cursor.execute(query, params)
+        row = cursor.fetchone()
+        
+        if row:
+            return dict(row)
+        return None
+
 def find_duplicate_artists() -> List[Dict[str, Any]]:
     """查找重复的画师"""
     with get_db() as conn:
@@ -354,7 +412,6 @@ def find_duplicate_artists() -> List[Dict[str, Any]]:
             WITH artist_identities AS (
                 SELECT
                     id,
-                    category_id,
                     COALESCE(NULLIF(danbooru_link, ''),
                              NULLIF(name_noob, ''),
                              NULLIF(name_nai, '')) as identity
@@ -363,11 +420,8 @@ def find_duplicate_artists() -> List[Dict[str, Any]]:
                               NULLIF(name_noob, ''),
                               NULLIF(name_nai, '')) IS NOT NULL
             )
-            SELECT
-                a.*,
-                c.name as category_name
+            SELECT a.*
             FROM artists a
-            JOIN categories c ON a.category_id = c.id
             WHERE EXISTS (
                 SELECT 1
                 FROM artist_identities ai1
@@ -377,10 +431,20 @@ def find_duplicate_artists() -> List[Dict[str, Any]]:
             )
             ORDER BY
                 COALESCE(a.danbooru_link, a.name_noob, a.name_nai),
-                c.display_order,
                 a.id
         """)
-        return [dict(row) for row in cursor.fetchall()]
+
+        artists = [dict(row) for row in cursor.fetchall()]
+
+        # 为每个画师添加分类信息
+        for artist in artists:
+            artist['categories'] = get_artist_categories(artist['id'])
+            if artist['categories']:
+                artist['category_name'] = ', '.join([c['name'] for c in artist['categories']])
+            else:
+                artist['category_name'] = '未分类'
+
+        return artists
 
 if __name__ == "__main__":
     init_db()
