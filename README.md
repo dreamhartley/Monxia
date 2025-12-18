@@ -66,6 +66,8 @@ docker run -d -p 5000:5000 \
 
 #### Windows
 
+> **推荐**：Windows 用户可直接下载 [Release](https://github.com/dreamhartley/Monxia/releases) 中的免构建版本，解压后运行 `start.bat` 即可。
+
 双击运行项目根目录下的 `start.bat`。
 
 #### Linux / macOS
