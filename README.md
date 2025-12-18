@@ -4,9 +4,9 @@
 
 # 梦匣 (Monxia)
 
-**AI 绘图画师 Tag 管理工具**
+**画师 Tag 管理工具**
 
-梦匣（Monxia）是一个专为 AI 绘图爱好者设计的 Tag 管理工具。它可以帮助你高效地整理、查询和组合画师 Tag（Prompt），支持 NovelAI 和 Stable Diffusion 等常见格式。
+梦匣（Monxia）是一个专为 AI 绘图爱好者设计的 Tag 管理工具。它可以帮助你高效地整理、查询和组合画师 Tag（Prompt），支持 NovelAI 和 NoobAI 等常见格式。
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
@@ -193,18 +193,6 @@ data/
 |--------|------|--------|
 | `DATA_DIR` | 数据存储目录 | `/app/data`（容器内） |
 | `FLASK_ENV` | Flask 运行模式 | `production` |
-
-### 数据迁移
-
-如需迁移现有数据到 Docker：
-
-```bash
-# 将现有数据复制到 data 目录
-mkdir -p data/artist_images data/backgrounds
-cp backend/artists.db backend/config.db data/
-cp -r backend/artist_images/* data/artist_images/
-cp -r backend/backgrounds/* data/backgrounds/
-```
 
 ## 📄 许可证
 
