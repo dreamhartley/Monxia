@@ -17,7 +17,8 @@ logging.basicConfig(level=logging.INFO)
 
 from config_db import (
     init_config_db, get_secret_key, get_admin_username,
-    verify_password, update_admin_credentials
+    verify_password, update_admin_credentials,
+    get_danbooru_config, update_danbooru_config
 )
 
 # 初始化配置数据库
@@ -26,7 +27,8 @@ init_config_db()
 from database import (
     init_db, get_all_categories, create_category, update_category, get_all_artists,
     get_artists_by_category, create_artist, update_artist, delete_artist,
-    get_artist_by_id, get_db, check_artist_exists
+    get_artist_by_id, get_db, check_artist_exists,
+    get_all_artists_for_dedup, batch_create_artists, batch_update_artists
 )
 from utils import (
     auto_complete_names, format_noob, format_nai,
@@ -175,6 +177,69 @@ def api_get_account_info():
         return jsonify({"success": True, "data": {"username": username}})
     except Exception as e:
         logging.error(f"获取账户信息失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# -------------------------------
+# Danbooru API 配置
+# -------------------------------
+
+@app.route('/api/settings/danbooru', methods=['GET'])
+@login_required
+def api_get_danbooru_config():
+    """获取 Danbooru API 配置"""
+    try:
+        config = get_danbooru_config()
+        # 隐藏 API Key 的大部分内容
+        masked_key = ''
+        if config.get('api_key'):
+            key = config['api_key']
+            if len(key) > 8:
+                masked_key = key[:4] + '*' * (len(key) - 8) + key[-4:]
+            else:
+                masked_key = '*' * len(key)
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "username": config.get('username', ''),
+                "api_key_masked": masked_key,
+                "has_config": bool(config.get('username') and config.get('api_key'))
+            }
+        })
+    except Exception as e:
+        logging.error(f"获取 Danbooru 配置失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/settings/danbooru', methods=['POST'])
+@login_required
+def api_update_danbooru_config():
+    """更新 Danbooru API 配置"""
+    try:
+        data = request.json
+        username = data.get('username', '').strip()
+        api_key = data.get('api_key', '').strip()
+
+        result = update_danbooru_config(username, api_key)
+
+        if result.get('success'):
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+    except Exception as e:
+        logging.error(f"更新 Danbooru 配置失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/settings/danbooru', methods=['DELETE'])
+@login_required
+def api_clear_danbooru_config():
+    """清除 Danbooru API 配置"""
+    try:
+        result = update_danbooru_config('', '')
+        return jsonify({"success": True, "message": "Danbooru API 配置已清除"})
+    except Exception as e:
+        logging.error(f"清除 Danbooru 配置失败: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 # -------------------------------
@@ -739,104 +804,191 @@ def api_export_json():
         logging.error(f"导出JSON失败: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/import/json', methods=['POST'])
+
+@app.route('/api/import/json-stream', methods=['POST'])
 @login_required
-def api_import_json():
-    """导入JSON数据（支持多分类）"""
-    try:
-        data = request.json
+def api_import_json_stream():
+    """
+    异步并发导入JSON数据（SSE流式响应，带进度）
+    使用并发处理提高导入效率
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
 
-        categories_data = data.get('categories', [])
-        artists_data = data.get('artists', [])
+    # 获取请求数据
+    data = request.json
+    categories_data = data.get('categories', [])
+    artists_data = data.get('artists', [])
 
-        # 导入分类（如果已存在则使用现有分类）
-        category_map = {}  # 旧ID -> 新ID
-        existing_categories = {c['name']: c['id'] for c in get_all_categories()}
+    def generate():
+        try:
+            total_artists = len(artists_data)
+            total_categories = len(categories_data)
 
-        for cat in categories_data:
-            old_id = cat.get('id')
-            cat_name = cat['name']
+            # 发送初始状态
+            yield f"data: {json.dumps({'type': 'start', 'total_categories': total_categories, 'total_artists': total_artists})}\n\n"
 
-            if cat_name in existing_categories:
-                # 分类已存在，使用现有ID
-                new_id = existing_categories[cat_name]
-            else:
-                # 创建新分类
-                new_id = create_category(cat_name)
-                existing_categories[cat_name] = new_id
+            # ========== 阶段1：处理分类 ==========
+            yield f"data: {json.dumps({'type': 'phase', 'phase': 'categories', 'message': '正在处理分类...'})}\n\n"
 
-            category_map[old_id] = new_id
+            category_map = {}  # 旧ID -> 新ID
+            existing_categories = {c['name']: c['id'] for c in get_all_categories()}
 
-        # 导入画师
-        imported_count = 0
-        updated_count = 0
-        for artist in artists_data:
-            # 处理多分类
-            category_ids = []
+            for idx, cat in enumerate(categories_data):
+                old_id = cat.get('id')
+                cat_name = cat['name']
 
-            # 新格式：categories 字段
-            if 'categories' in artist:
-                for cat in artist['categories']:
-                    old_cat_id = cat.get('id')
-                    if old_cat_id in category_map:
-                        category_ids.append(category_map[old_cat_id])
+                if cat_name in existing_categories:
+                    new_id = existing_categories[cat_name]
+                else:
+                    new_id = create_category(cat_name)
+                    existing_categories[cat_name] = new_id
 
-            # 旧格式：category_id 字段
-            elif 'category_id' in artist:
-                old_category_id = artist.get('category_id')
-                new_category_id = category_map.get(old_category_id)
-                if new_category_id:
-                    category_ids = [new_category_id]
+                category_map[old_id] = new_id
 
-            # 如果没有分类，使用"未分类"
-            if not category_ids:
-                uncategorized = next((c for c in get_all_categories() if c['name'] == '未分类'), None)
-                if uncategorized:
-                    category_ids = [uncategorized['id']]
+                # 每处理10个分类发送一次进度
+                if (idx + 1) % 10 == 0 or idx == total_categories - 1:
+                    yield f"data: {json.dumps({'type': 'progress', 'phase': 'categories', 'current': idx + 1, 'total': total_categories})}\n\n"
 
-            if category_ids:
-                # 检查画师是否已存在
-                existing_artist = check_artist_exists(
-                    name_noob=artist.get('name_noob', ''),
-                    name_nai=artist.get('name_nai', ''),
-                    danbooru_link=artist.get('danbooru_link', '')
-                )
+            yield f"data: {json.dumps({'type': 'phase_complete', 'phase': 'categories', 'count': len(categories_data)})}\n\n"
+
+            # ========== 阶段2：预加载现有画师数据用于去重 ==========
+            yield f"data: {json.dumps({'type': 'phase', 'phase': 'dedup_load', 'message': '正在加载现有数据...'})}\n\n"
+
+            existing_artists = get_all_artists_for_dedup()
+            uncategorized = next((c for c in get_all_categories() if c['name'] == '未分类'), None)
+            uncategorized_id = uncategorized['id'] if uncategorized else None
+
+            yield f"data: {json.dumps({'type': 'phase_complete', 'phase': 'dedup_load', 'message': '数据加载完成'})}\n\n"
+
+            # ========== 阶段3：并发处理画师数据 ==========
+            yield f"data: {json.dumps({'type': 'phase', 'phase': 'process', 'message': '正在处理画师数据...'})}\n\n"
+
+            # 用于收集处理结果
+            to_create = []
+            to_update = []
+            processed_count = 0
+            lock = threading.Lock()
+
+            def process_artist(artist_item):
+                """处理单个画师数据，返回处理结果"""
+                nonlocal processed_count
+
+                # 处理分类映射
+                category_ids = []
+
+                if 'categories' in artist_item:
+                    for cat in artist_item['categories']:
+                        old_cat_id = cat.get('id')
+                        if old_cat_id in category_map:
+                            category_ids.append(category_map[old_cat_id])
+                elif 'category_id' in artist_item:
+                    old_category_id = artist_item.get('category_id')
+                    new_category_id = category_map.get(old_category_id)
+                    if new_category_id:
+                        category_ids = [new_category_id]
+
+                if not category_ids and uncategorized_id:
+                    category_ids = [uncategorized_id]
+
+                if not category_ids:
+                    return None
+
+                name_noob = artist_item.get('name_noob', '').strip()
+                name_nai = artist_item.get('name_nai', '').strip()
+                danbooru_link = artist_item.get('danbooru_link', '').strip()
+
+                # 快速去重检查（使用预加载的数据）
+                existing_artist = None
+                if name_noob and name_noob in existing_artists['by_noob']:
+                    existing_artist = existing_artists['by_noob'][name_noob]
+                elif name_nai and name_nai in existing_artists['by_nai']:
+                    existing_artist = existing_artists['by_nai'][name_nai]
+                elif danbooru_link and danbooru_link in existing_artists['by_link']:
+                    existing_artist = existing_artists['by_link'][danbooru_link]
+
+                result = {
+                    'category_ids': category_ids,
+                    'name_noob': name_noob,
+                    'name_nai': name_nai,
+                    'danbooru_link': danbooru_link,
+                    'post_count': artist_item.get('post_count'),
+                    'notes': artist_item.get('notes', ''),
+                    'skip_danbooru': artist_item.get('skip_danbooru', False)
+                }
 
                 if existing_artist:
-                    # 画师已存在，更新信息但保留现有的 image_example
-                    update_artist(
-                        existing_artist['id'],
-                        category_ids=category_ids,
-                        name_noob=artist.get('name_noob', ''),
-                        name_nai=artist.get('name_nai', ''),
-                        danbooru_link=artist.get('danbooru_link', ''),
-                        post_count=artist.get('post_count'),
-                        notes=artist.get('notes', ''),
-                        # 不更新 image_example，保留现有图片
-                        skip_danbooru=artist.get('skip_danbooru', False)
-                    )
-                    updated_count += 1
+                    result['id'] = existing_artist['id']
+                    result['action'] = 'update'
                 else:
-                    # 新画师，创建时清空 image_example
-                    create_artist(
-                        category_ids=category_ids,
-                        name_noob=artist.get('name_noob', ''),
-                        name_nai=artist.get('name_nai', ''),
-                        danbooru_link=artist.get('danbooru_link', ''),
-                        post_count=artist.get('post_count'),
-                        notes=artist.get('notes', ''),
-                        image_example='',  # 新导入的画师清空图片路径，因为图片文件不会随数据一起迁移
-                        skip_danbooru=artist.get('skip_danbooru', False)
-                    )
-                    imported_count += 1
+                    result['image_example'] = ''  # 新导入的画师清空图片
+                    result['action'] = 'create'
 
-        return jsonify({
-            "success": True,
-            "message": f"成功导入 {len(categories_data)} 个分类，新增 {imported_count} 个画师，更新 {updated_count} 个画师"
-        })
-    except Exception as e:
-        logging.error(f"导入JSON失败: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+                with lock:
+                    processed_count += 1
+
+                return result
+
+            # 使用线程池并发处理
+            batch_size = 100
+            max_workers = min(8, (total_artists // 100) + 1)  # 动态调整线程数
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(process_artist, artist): i for i, artist in enumerate(artists_data)}
+
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result:
+                        if result['action'] == 'create':
+                            to_create.append(result)
+                        else:
+                            to_update.append(result)
+
+                    # 每处理50个发送一次进度
+                    current = len(to_create) + len(to_update)
+                    if current % 50 == 0 or current == total_artists:
+                        yield f"data: {json.dumps({'type': 'progress', 'phase': 'process', 'current': current, 'total': total_artists})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'phase_complete', 'phase': 'process', 'to_create': len(to_create), 'to_update': len(to_update)})}\n\n"
+
+            # ========== 阶段4：批量写入数据库 ==========
+            yield f"data: {json.dumps({'type': 'phase', 'phase': 'database', 'message': '正在写入数据库...'})}\n\n"
+
+            # 批量创建
+            created_count = 0
+            if to_create:
+                # 分批创建，每批100个
+                for i in range(0, len(to_create), batch_size):
+                    batch = to_create[i:i + batch_size]
+                    batch_create_artists(batch)
+                    created_count += len(batch)
+                    yield f"data: {json.dumps({'type': 'progress', 'phase': 'database', 'action': 'create', 'current': created_count, 'total': len(to_create)})}\n\n"
+
+            # 批量更新
+            updated_count = 0
+            if to_update:
+                for i in range(0, len(to_update), batch_size):
+                    batch = to_update[i:i + batch_size]
+                    batch_update_artists(batch)
+                    updated_count += len(batch)
+                    yield f"data: {json.dumps({'type': 'progress', 'phase': 'database', 'action': 'update', 'current': updated_count, 'total': len(to_update)})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'phase_complete', 'phase': 'database', 'created': created_count, 'updated': updated_count})}\n\n"
+
+            # 发送完成状态
+            message = f"成功导入 {len(categories_data)} 个分类，新增 {created_count} 个画师，更新 {updated_count} 个画师"
+            yield f"data: {json.dumps({'type': 'complete', 'message': message, 'categories_count': len(categories_data), 'created_count': created_count, 'updated_count': updated_count})}\n\n"
+
+        except Exception as e:
+            logging.error(f"导入JSON失败: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream', headers={
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no'
+    })
+
 
 # -------------------------------
 # 画师串(预设)管理 API

@@ -12,17 +12,20 @@ import {
   EyeOff,
   Image,
   Trash2,
+  Key,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { importExportApi, accountApi, backgroundApi } from '@/lib/api'
+import { importExportApi, accountApi, backgroundApi, danbooruConfigApi } from '@/lib/api'
+import type { ImportProgress } from '@/lib/api'
 
 export default function SettingsPage() {
   const [exportLoading, setExportLoading] = useState(false)
   const [importLoading, setImportLoading] = useState(false)
+  const [importProgress, setImportProgress] = useState<ImportProgress | null>(null)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [isDragOver, setIsDragOver] = useState(false)
 
@@ -40,6 +43,14 @@ export default function SettingsPage() {
   const [bgLoading, setBgLoading] = useState(false)
   const [hasCustomBg, setHasCustomBg] = useState(false)
   const [bgPreviewUrl, setBgPreviewUrl] = useState<string | null>(null)
+
+  // Danbooru API 配置状态
+  const [danbooruLoading, setDanbooruLoading] = useState(false)
+  const [danbooruUsername, setDanbooruUsername] = useState('')
+  const [danbooruApiKey, setDanbooruApiKey] = useState('')
+  const [danbooruMaskedKey, setDanbooruMaskedKey] = useState('')
+  const [hasDanbooruConfig, setHasDanbooruConfig] = useState(false)
+  const [showDanbooruApiKey, setShowDanbooruApiKey] = useState(false)
 
   const jsonFileRef = useRef<HTMLInputElement>(null)
   const bgFileRef = useRef<HTMLInputElement>(null)
@@ -65,6 +76,19 @@ export default function SettingsPage() {
       }
     }
     fetchBackgroundInfo()
+  }, [])
+
+  // 获取 Danbooru API 配置
+  useEffect(() => {
+    const fetchDanbooruConfig = async () => {
+      const res = await danbooruConfigApi.get()
+      if (res.success && res.data) {
+        setDanbooruUsername(res.data.username)
+        setDanbooruMaskedKey(res.data.api_key_masked)
+        setHasDanbooruConfig(res.data.has_config)
+      }
+    }
+    fetchDanbooruConfig()
   }, [])
 
   const handleExportJson = async () => {
@@ -100,20 +124,27 @@ export default function SettingsPage() {
   const handleImportJson = async (file: File) => {
     setImportLoading(true)
     setMessage(null)
+    setImportProgress(null)
     try {
       const text = await file.text()
       const data = JSON.parse(text)
-      const res = await importExportApi.importJson(data)
-      if (res.success) {
-        setMessage({ type: 'success', text: res.message || 'JSON 导入成功' })
-      } else {
-        setMessage({ type: 'error', text: res.error || '导入失败' })
-      }
+
+      // 使用流式导入（并发优化版本）
+      await importExportApi.importJsonStream(data, (progress) => {
+        setImportProgress(progress)
+
+        if (progress.type === 'complete') {
+          setMessage({ type: 'success', text: progress.message || 'JSON 导入成功' })
+        } else if (progress.type === 'error') {
+          setMessage({ type: 'error', text: progress.error || '导入失败' })
+        }
+      })
     } catch (error) {
       console.error('Import JSON failed:', error)
       setMessage({ type: 'error', text: '导入失败，请检查文件格式' })
     } finally {
       setImportLoading(false)
+      setImportProgress(null)
       if (jsonFileRef.current) {
         jsonFileRef.current.value = ''
       }
@@ -231,6 +262,63 @@ export default function SettingsPage() {
       setMessage({ type: 'error', text: '删除失败' })
     } finally {
       setBgLoading(false)
+    }
+  }
+
+  // 处理 Danbooru 配置更新
+  const handleUpdateDanbooruConfig = async () => {
+    if (!danbooruUsername.trim() && !danbooruApiKey.trim()) {
+      setMessage({ type: 'error', text: '请输入用户名和 API Key' })
+      return
+    }
+
+    setDanbooruLoading(true)
+    setMessage(null)
+    try {
+      const res = await danbooruConfigApi.update({
+        username: danbooruUsername,
+        api_key: danbooruApiKey,
+      })
+      if (res.success) {
+        setMessage({ type: 'success', text: res.message || 'Danbooru API 配置已保存' })
+        setHasDanbooruConfig(true)
+        // 清空 API Key 输入框，重新获取 masked key
+        setDanbooruApiKey('')
+        const configRes = await danbooruConfigApi.get()
+        if (configRes.success && configRes.data) {
+          setDanbooruMaskedKey(configRes.data.api_key_masked)
+        }
+      } else {
+        setMessage({ type: 'error', text: res.error || '保存失败' })
+      }
+    } catch (error) {
+      console.error('Update Danbooru config failed:', error)
+      setMessage({ type: 'error', text: '保存失败' })
+    } finally {
+      setDanbooruLoading(false)
+    }
+  }
+
+  // 处理清除 Danbooru 配置
+  const handleClearDanbooruConfig = async () => {
+    setDanbooruLoading(true)
+    setMessage(null)
+    try {
+      const res = await danbooruConfigApi.clear()
+      if (res.success) {
+        setDanbooruUsername('')
+        setDanbooruApiKey('')
+        setDanbooruMaskedKey('')
+        setHasDanbooruConfig(false)
+        setMessage({ type: 'success', text: res.message || 'Danbooru API 配置已清除' })
+      } else {
+        setMessage({ type: 'error', text: res.error || '清除失败' })
+      }
+    } catch (error) {
+      console.error('Clear Danbooru config failed:', error)
+      setMessage({ type: 'error', text: '清除失败' })
+    } finally {
+      setDanbooruLoading(false)
     }
   }
 
@@ -382,6 +470,103 @@ export default function SettingsPage() {
                 )}
                 保存修改
               </Button>
+            </CardContent>
+          </Card>
+
+          {/* Danbooru API 配置 */}
+          <div className="flex items-center gap-2 pt-4">
+            <h2 className="text-lg font-medium text-foreground">Danbooru API</h2>
+            <span className="text-sm text-muted-foreground">· 配置 API 认证（可选）</span>
+          </div>
+
+          <Card className="bg-card/80 backdrop-blur-sm border-border/50">
+            <CardHeader className="pb-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-purple-500/10">
+                  <Key className="h-5 w-5 text-purple-500" />
+                </div>
+                <div>
+                  <CardTitle className="text-base">API 认证</CardTitle>
+                  <CardDescription className="text-xs mt-0.5">
+                    {hasDanbooruConfig ? '已配置 API Key' : '未配置（使用匿名访问）'}
+                  </CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* 用户名 */}
+              <div className="space-y-2">
+                <Label htmlFor="danbooru-username" className="text-sm flex items-center gap-2">
+                  <User className="h-3.5 w-3.5" />
+                  Danbooru 用户名
+                </Label>
+                <Input
+                  id="danbooru-username"
+                  type="text"
+                  value={danbooruUsername}
+                  onChange={(e) => setDanbooruUsername(e.target.value)}
+                  placeholder="输入 Danbooru 用户名"
+                />
+              </div>
+
+              {/* API Key */}
+              <div className="space-y-2">
+                <Label htmlFor="danbooru-apikey" className="text-sm flex items-center gap-2">
+                  <Key className="h-3.5 w-3.5" />
+                  API Key
+                  {danbooruMaskedKey && (
+                    <span className="text-muted-foreground font-mono text-xs">
+                      (当前: {danbooruMaskedKey})
+                    </span>
+                  )}
+                </Label>
+                <div className="relative">
+                  <Input
+                    id="danbooru-apikey"
+                    type={showDanbooruApiKey ? 'text' : 'password'}
+                    value={danbooruApiKey}
+                    onChange={(e) => setDanbooruApiKey(e.target.value)}
+                    placeholder={hasDanbooruConfig ? '输入新的 API Key（留空保持不变）' : '输入 API Key'}
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowDanbooruApiKey(!showDanbooruApiKey)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {showDanbooruApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  在 Danbooru 个人资料页面生成 API Key：Profile → API Key
+                </p>
+              </div>
+
+              <div className="flex gap-2">
+                <Button
+                  onClick={handleUpdateDanbooruConfig}
+                  disabled={danbooruLoading}
+                  className="flex-1 gap-2"
+                >
+                  {danbooruLoading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="h-4 w-4" />
+                  )}
+                  保存配置
+                </Button>
+                {hasDanbooruConfig && (
+                  <Button
+                    onClick={handleClearDanbooruConfig}
+                    disabled={danbooruLoading}
+                    variant="outline"
+                    className="gap-2 text-destructive hover:text-destructive"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    清除
+                  </Button>
+                )}
+              </div>
             </CardContent>
           </Card>
 
@@ -547,7 +732,33 @@ export default function SettingsPage() {
                   {importLoading ? (
                     <div className="flex flex-col items-center gap-2 py-1">
                       <Loader2 className="h-6 w-6 animate-spin text-primary" />
-                      <span className="text-sm text-muted-foreground">正在导入...</span>
+                      {importProgress ? (
+                        <div className="w-full space-y-1">
+                          <span className="text-sm text-muted-foreground">
+                            {importProgress.phase === 'categories' && '处理分类中...'}
+                            {importProgress.phase === 'dedup_load' && '加载数据中...'}
+                            {importProgress.phase === 'process' && '处理画师数据...'}
+                            {importProgress.phase === 'database' && (
+                              importProgress.action === 'create' ? '创建画师...' : '更新画师...'
+                            )}
+                          </span>
+                          {importProgress.current !== undefined && importProgress.total !== undefined && importProgress.total > 0 && (
+                            <>
+                              <div className="w-full bg-muted rounded-full h-1.5">
+                                <div
+                                  className="bg-primary h-1.5 rounded-full transition-all duration-300"
+                                  style={{ width: `${Math.round((importProgress.current / importProgress.total) * 100)}%` }}
+                                />
+                              </div>
+                              <span className="text-xs text-muted-foreground">
+                                {importProgress.current} / {importProgress.total}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-sm text-muted-foreground">正在导入...</span>
+                      )}
                     </div>
                   ) : (
                     <div className="flex flex-col items-center gap-1.5 py-1">

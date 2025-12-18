@@ -125,12 +125,6 @@ if "!FIRST_RUN!"=="1" (
         pause
         exit /b 1
     )
-
-    echo [4/5] Installing Playwright browser...
-    playwright install chromium
-    if errorlevel 1 (
-        echo [Warning] Playwright browser installation failed, some features may not work
-    )
 ) else (
     echo [4/5] Virtual environment exists, skipping dependency installation
     echo       To update dependencies, delete backend\venv directory and run again
