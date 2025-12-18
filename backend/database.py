@@ -446,5 +446,156 @@ def find_duplicate_artists() -> List[Dict[str, Any]]:
 
         return artists
 
+def get_all_artists_for_dedup() -> Dict[str, Dict[str, Any]]:
+    """
+    获取所有画师数据用于去重检测
+    返回: {
+        'by_noob': {name_noob: artist_dict},
+        'by_nai': {name_nai: artist_dict},
+        'by_link': {danbooru_link: artist_dict}
+    }
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM artists")
+
+        by_noob = {}
+        by_nai = {}
+        by_link = {}
+
+        for row in cursor.fetchall():
+            artist = dict(row)
+            if artist.get('name_noob'):
+                by_noob[artist['name_noob']] = artist
+            if artist.get('name_nai'):
+                by_nai[artist['name_nai']] = artist
+            if artist.get('danbooru_link'):
+                by_link[artist['danbooru_link']] = artist
+
+        return {
+            'by_noob': by_noob,
+            'by_nai': by_nai,
+            'by_link': by_link
+        }
+
+
+def batch_create_artists(artists_data: List[Dict[str, Any]]) -> List[int]:
+    """
+    批量创建画师
+    artists_data: [{
+        'category_ids': [...],
+        'name_noob': '',
+        'name_nai': '',
+        'danbooru_link': '',
+        'post_count': None,
+        'notes': '',
+        'image_example': '',
+        'skip_danbooru': False
+    }, ...]
+    返回: 新创建的画师ID列表
+    """
+    if not artists_data:
+        return []
+
+    created_ids = []
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        for artist in artists_data:
+            artist_uuid = str(uuid.uuid4())
+
+            cursor.execute("""
+                INSERT INTO artists
+                (uuid, name_noob, name_nai, danbooru_link, post_count, notes, image_example, skip_danbooru)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                artist_uuid,
+                artist.get('name_noob', ''),
+                artist.get('name_nai', ''),
+                artist.get('danbooru_link', ''),
+                artist.get('post_count'),
+                artist.get('notes', ''),
+                artist.get('image_example', ''),
+                1 if artist.get('skip_danbooru') else 0
+            ))
+
+            artist_id = cursor.lastrowid
+            created_ids.append(artist_id)
+
+            # 添加分类关联
+            for category_id in artist.get('category_ids', []):
+                cursor.execute("""
+                    INSERT INTO artist_categories (artist_id, category_id)
+                    VALUES (?, ?)
+                """, (artist_id, category_id))
+
+        return created_ids
+
+
+def batch_update_artists(updates: List[Dict[str, Any]]) -> int:
+    """
+    批量更新画师
+    updates: [{
+        'id': artist_id,
+        'category_ids': [...],  # 可选
+        'name_noob': '',
+        'name_nai': '',
+        ...
+    }, ...]
+    返回: 更新的画师数量
+    """
+    if not updates:
+        return 0
+
+    allowed_fields = ['name_noob', 'name_nai', 'danbooru_link', 'post_count',
+                      'notes', 'image_example', 'skip_danbooru']
+    updated_count = 0
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        for update in updates:
+            artist_id = update.get('id')
+            if not artist_id:
+                continue
+
+            # 处理分类更新
+            category_ids = update.get('category_ids')
+            if category_ids is not None:
+                cursor.execute("DELETE FROM artist_categories WHERE artist_id = ?", (artist_id,))
+                for category_id in category_ids:
+                    cursor.execute("""
+                        INSERT INTO artist_categories (artist_id, category_id)
+                        VALUES (?, ?)
+                    """, (artist_id, category_id))
+
+            # 处理其他字段更新
+            field_updates = {k: v for k, v in update.items() if k in allowed_fields}
+
+            if 'skip_danbooru' in field_updates:
+                field_updates['skip_danbooru'] = 1 if field_updates['skip_danbooru'] else 0
+
+            if field_updates:
+                set_clause = ", ".join([f"{k} = ?" for k in field_updates.keys()])
+                set_clause += ", updated_at = CURRENT_TIMESTAMP"
+
+                values = list(field_updates.values())
+                values.append(artist_id)
+
+                cursor.execute(f"""
+                    UPDATE artists
+                    SET {set_clause}
+                    WHERE id = ?
+                """, values)
+
+                if cursor.rowcount > 0:
+                    updated_count += 1
+            elif category_ids is not None:
+                updated_count += 1
+
+        return updated_count
+
+
 if __name__ == "__main__":
     init_db()

@@ -57,6 +57,17 @@ def init_config_db():
             )
         """)
 
+        # 创建 Danbooru API 配置表
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS danbooru_config (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                username TEXT DEFAULT '',
+                api_key TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # 检查是否已有配置，如果没有则创建默认配置
         cursor.execute("SELECT id FROM admin_config WHERE id = 1")
         if not cursor.fetchone():
@@ -184,6 +195,69 @@ def update_admin_credentials(
         message_parts.append("密码已更新")
 
     return {"success": True, "message": "，".join(message_parts)}
+
+
+# -------------------------------
+# Danbooru API 配置管理
+# -------------------------------
+
+def get_danbooru_config() -> Optional[Dict[str, Any]]:
+    """
+    获取 Danbooru API 配置
+    返回: {'username': str, 'api_key': str} 或 None
+    """
+    with get_config_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT username, api_key FROM danbooru_config WHERE id = 1")
+        row = cursor.fetchone()
+        if row:
+            return {
+                'username': row['username'] or '',
+                'api_key': row['api_key'] or ''
+            }
+        return {'username': '', 'api_key': ''}
+
+
+def update_danbooru_config(username: str, api_key: str) -> Dict[str, Any]:
+    """
+    更新 Danbooru API 配置
+
+    Args:
+        username: Danbooru 用户名
+        api_key: Danbooru API Key
+
+    Returns:
+        Dict 包含 success 和 message/error
+    """
+    with get_config_db() as conn:
+        cursor = conn.cursor()
+
+        # 检查是否已有配置
+        cursor.execute("SELECT id FROM danbooru_config WHERE id = 1")
+        if cursor.fetchone():
+            # 更新现有配置
+            cursor.execute("""
+                UPDATE danbooru_config
+                SET username = ?, api_key = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = 1
+            """, (username or '', api_key or ''))
+        else:
+            # 插入新配置
+            cursor.execute("""
+                INSERT INTO danbooru_config (id, username, api_key)
+                VALUES (1, ?, ?)
+            """, (username or '', api_key or ''))
+
+        conn.commit()
+
+    return {"success": True, "message": "Danbooru API 配置已更新"}
+
+
+def clear_danbooru_config() -> Dict[str, Any]:
+    """
+    清除 Danbooru API 配置
+    """
+    return update_danbooru_config('', '')
 
 
 if __name__ == "__main__":

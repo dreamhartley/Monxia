@@ -222,14 +222,98 @@ export const toolsApi = {
 }
 
 // 导入导出相关
+export interface ImportProgress {
+  type: 'start' | 'phase' | 'phase_complete' | 'progress' | 'complete' | 'error'
+  phase?: 'categories' | 'dedup_load' | 'process' | 'database'
+  action?: 'create' | 'update'
+  current?: number
+  total?: number
+  total_categories?: number
+  total_artists?: number
+  to_create?: number
+  to_update?: number
+  count?: number
+  created?: number
+  updated?: number
+  categories_count?: number
+  created_count?: number
+  updated_count?: number
+  message?: string
+  error?: string
+}
+
 export const importExportApi = {
   exportJson: () => request<{ categories: Category[]; artists: Artist[] }>('/export/json'),
 
-  importJson: (data: { categories: Category[]; artists: Artist[] }) =>
-    request('/import/json', {
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
+  // SSE 流式导入（并发优化版本）
+  importJsonStream: (
+    data: { categories: Category[]; artists: Artist[] },
+    onProgress: (data: ImportProgress) => void
+  ): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      fetch(`${API_BASE}/import/json-stream`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      })
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`)
+          }
+          const reader = response.body?.getReader()
+          if (!reader) {
+            throw new Error('No response body')
+          }
+
+          const decoder = new TextDecoder()
+          let buffer = ''
+
+          const processText = (text: string) => {
+            buffer += text
+            const lines = buffer.split('\n')
+            buffer = lines.pop() || ''
+
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const jsonStr = line.slice(6)
+                  const data = JSON.parse(jsonStr) as ImportProgress
+                  onProgress(data)
+
+                  if (data.type === 'complete') {
+                    resolve()
+                  } else if (data.type === 'error') {
+                    reject(new Error(data.error || '导入失败'))
+                  }
+                } catch (e) {
+                  console.error('Failed to parse SSE data:', e)
+                }
+              }
+            }
+          }
+
+          const read = (): Promise<void> => {
+            return reader.read().then(({ done, value }) => {
+              if (done) {
+                if (buffer) processText('')
+                return
+              }
+              processText(decoder.decode(value, { stream: true }))
+              return read()
+            })
+          }
+
+          return read()
+        })
+        .catch((error) => {
+          onProgress({ type: 'error', error: error.message })
+          reject(error)
+        })
+    })
+  },
 }
 
 // 画师串相关
@@ -288,6 +372,31 @@ export const backgroundApi = {
   // 删除自定义背景图
   delete: () =>
     request('/background', {
+      method: 'DELETE',
+    }),
+}
+
+// Danbooru API 配置相关
+export interface DanbooruConfig {
+  username: string
+  api_key_masked: string
+  has_config: boolean
+}
+
+export const danbooruConfigApi = {
+  // 获取当前配置
+  get: () => request<DanbooruConfig>('/settings/danbooru'),
+
+  // 更新配置
+  update: (data: { username: string; api_key: string }) =>
+    request<{ message: string }>('/settings/danbooru', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  // 清除配置
+  clear: () =>
+    request<{ message: string }>('/settings/danbooru', {
       method: 'DELETE',
     }),
 }

@@ -110,12 +110,6 @@ if [ $FIRST_RUN -eq 1 ]; then
         echo "[Error] Python dependency installation failed"
         exit 1
     fi
-
-    echo "[4/5] Installing Playwright browser..."
-    playwright install chromium
-    if [ $? -ne 0 ]; then
-        echo "[Warning] Playwright browser installation failed, some features may not work"
-    fi
 else
     echo "[4/5] Virtual environment exists, skipping dependency installation"
     echo "      To update dependencies, delete backend/venv directory and run again"
