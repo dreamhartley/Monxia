@@ -1,28 +1,28 @@
 # ================================
-# 阶段1: 构建前端
+# Stage 1: Build frontend
 # ================================
 FROM node:20-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 
-# 复制前端依赖文件
+# Copy frontend dependency files
 COPY frontend/package.json frontend/package-lock.json* ./
 
-# 安装依赖
+# Install dependencies
 RUN npm ci
 
-# 复制前端源码
+# Copy frontend source code
 COPY frontend/ ./
 
-# 构建前端
+# Build frontend (outputs to ../backend/dist)
 RUN npm run build
 
 # ================================
-# 阶段2: Python 运行时
+# Stage 2: Python runtime
 # ================================
 FROM python:3.12-slim AS runtime
 
-# 安装系统依赖（playwright 需要）
+# Install system dependencies (required by Playwright)
 RUN apt-get update && apt-get install -y \
     wget \
     ca-certificates \
@@ -47,44 +47,44 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# 复制后端依赖文件
+# Copy backend dependency file
 COPY backend/requirements.txt ./backend/
 
-# 安装 Python 依赖
+# Install Python dependencies
 RUN pip install --no-cache-dir -r backend/requirements.txt
 
-# 安装 Playwright 浏览器
+# Install Playwright browser
 RUN playwright install chromium
 
-# 复制后端源码
+# Copy backend source code
 COPY backend/ ./backend/
 
-# 从阶段1复制前端构建产物到 backend/dist
-COPY --from=frontend-builder /app/frontend/dist ./backend/dist
+# Copy frontend build output from stage 1 (already built to backend/dist)
+COPY --from=frontend-builder /app/backend/dist ./backend/dist
 
-# 创建数据目录（用于存储数据库和图片）
-# 目录结构:
-#   /app/data/artists.db      - 画师数据库
-#   /app/data/config.db       - 配置数据库
-#   /app/data/artist_images/  - 画师示例图片
-#   /app/data/backgrounds/    - 登录背景图片
+# Create data directories (for database and images)
+# Directory structure:
+#   /app/data/artists.db      - Artist database
+#   /app/data/config.db       - Config database
+#   /app/data/artist_images/  - Artist sample images
+#   /app/data/backgrounds/    - Login background images
 RUN mkdir -p /app/data/artist_images /app/data/backgrounds
 
-# 设置环境变量
+# Set environment variables
 ENV FLASK_APP=backend/app.py
 ENV FLASK_ENV=production
 ENV PYTHONUNBUFFERED=1
-# 数据目录环境变量（数据库和图片都存储在这里）
+# Data directory environment variable (database and images stored here)
 ENV DATA_DIR=/app/data
 
-# 暴露端口
+# Expose port
 EXPOSE 5000
 
-# 声明数据卷
+# Declare data volume
 VOLUME ["/app/data"]
 
-# 工作目录切换到 backend
+# Switch working directory to backend
 WORKDIR /app/backend
 
-# 启动命令
+# Startup command
 CMD ["python", "run.py"]

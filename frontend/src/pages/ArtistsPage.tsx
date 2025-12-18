@@ -766,19 +766,107 @@ export default function ArtistsPage() {
     }))
   }
 
+  // 跟踪图片加载失败的画师ID
+  const [failedImages, setFailedImages] = useState<Set<number>>(() => new Set())
+
+  // 处理图片加载失败
+  const handleImageError = useCallback((artistId: number) => {
+    setFailedImages((prev) => new Set(prev).add(artistId))
+  }, [])
+
+  // 渲染下拉菜单
+  const renderDropdownMenu = (artist: Artist, isListView = false) => (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="secondary"
+          size="icon"
+          className={
+            isListView
+              ? 'h-8 w-8 bg-secondary/50'
+              : 'absolute top-2 right-2 h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity bg-background/80 backdrop-blur-sm'
+          }
+        >
+          <MoreHorizontal className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onClick={() => openEditDialog(artist)}>
+          <Edit className="h-4 w-4 mr-2" />
+          编辑
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => toggleFavorite(artist.id)}>
+          <Star className={`h-4 w-4 mr-2 ${favorites.has(artist.id) ? 'fill-current text-yellow-500' : ''}`} />
+          {favorites.has(artist.id) ? '移出收藏' : '加入收藏'}
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => addToPresetDraft(artist)}>
+          <ListPlus className="h-4 w-4 mr-2" />
+          添加到画师串
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => {
+            const input = document.getElementById(
+              `file-input-${artist.id}`
+            ) as HTMLInputElement
+            input?.click()
+          }}
+        >
+          <ImageIcon className="h-4 w-4 mr-2" />
+          上传封面
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        {artist.name_noob && (
+          <DropdownMenuItem onClick={() => copyToClipboard(artist.name_noob)}>
+            <Copy className="h-4 w-4 mr-2" />
+            复制 NOOB 格式
+          </DropdownMenuItem>
+        )}
+        {artist.name_nai && (
+          <DropdownMenuItem onClick={() => copyToClipboard(artist.name_nai)}>
+            <Copy className="h-4 w-4 mr-2" />
+            复制 NAI 格式
+          </DropdownMenuItem>
+        )}
+        {artist.danbooru_link && (
+          <DropdownMenuItem
+            onClick={() => window.open(artist.danbooru_link, '_blank')}
+          >
+            <ExternalLink className="h-4 w-4 mr-2" />
+            打开 Danbooru
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onClick={() => {
+            setCurrentArtist(artist)
+            setIsDeleteDialogOpen(true)
+          }}
+          className="text-destructive focus:text-destructive"
+        >
+          <Trash2 className="h-4 w-4 mr-2" />
+          删除
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+
   // 渲染网格视图卡片
-  const renderGridCard = (artist: Artist) => (
+  const renderGridCard = (artist: Artist) => {
+    const hasValidImage = artist.image_example && !failedImages.has(artist.id)
+
+    return (
     <Card
       key={artist.id}
       className="group bg-card/80 backdrop-blur-sm border-border/50 hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5 transition-all duration-300 overflow-hidden"
     >
       {/* 图片区域 */}
       <div className="aspect-video bg-secondary/30 relative overflow-hidden">
-        {artist.image_example ? (
+        {hasValidImage ? (
           <img
             src={`${API_BASE.replace('/api', '')}/images/${artist.image_example}`}
             alt={artist.name_noob || artist.name_nai}
             className="w-full h-full object-cover object-top transition-transform duration-300 group-hover:scale-105 cursor-pointer"
+            onError={() => handleImageError(artist.id)}
             onClick={(e) => {
               const rect = e.currentTarget.getBoundingClientRect()
               setPreviewImage({
@@ -860,10 +948,13 @@ export default function ArtistsPage() {
         </div>
       </CardContent>
     </Card>
-  )
+  )}
 
   // 渲染列表视图卡片
-  const renderListCard = (artist: Artist) => (
+  const renderListCard = (artist: Artist) => {
+    const hasValidImage = artist.image_example && !failedImages.has(artist.id)
+
+    return (
     <Card
       key={artist.id}
       className="group bg-card/80 backdrop-blur-sm border-border/50 hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5 transition-all duration-300"
@@ -871,11 +962,12 @@ export default function ArtistsPage() {
       <CardContent className="p-3 flex items-center gap-4">
         {/* 缩略图 */}
         <div className="w-16 h-16 shrink-0 rounded-lg bg-secondary/30 overflow-hidden relative">
-          {artist.image_example ? (
+          {hasValidImage ? (
             <img
               src={`${API_BASE.replace('/api', '')}/images/${artist.image_example}`}
               alt={artist.name_noob || artist.name_nai}
               className="w-full h-full object-cover object-top cursor-pointer"
+              onError={() => handleImageError(artist.id)}
               onClick={(e) => {
                 const rect = e.currentTarget.getBoundingClientRect()
                 setPreviewImage({
@@ -955,83 +1047,7 @@ export default function ArtistsPage() {
         />
       </CardContent>
     </Card>
-  )
-
-  // 渲染下拉菜单
-  const renderDropdownMenu = (artist: Artist, isListView = false) => (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="secondary"
-          size="icon"
-          className={
-            isListView
-              ? 'h-8 w-8 bg-secondary/50'
-              : 'absolute top-2 right-2 h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity bg-background/80 backdrop-blur-sm'
-          }
-        >
-          <MoreHorizontal className="h-4 w-4" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuItem onClick={() => openEditDialog(artist)}>
-          <Edit className="h-4 w-4 mr-2" />
-          编辑
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => toggleFavorite(artist.id)}>
-          <Star className={`h-4 w-4 mr-2 ${favorites.has(artist.id) ? 'fill-current text-yellow-500' : ''}`} />
-          {favorites.has(artist.id) ? '移出收藏' : '加入收藏'}
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => addToPresetDraft(artist)}>
-          <ListPlus className="h-4 w-4 mr-2" />
-          添加到画师串
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          onClick={() => {
-            const input = document.getElementById(
-              `file-input-${artist.id}`
-            ) as HTMLInputElement
-            input?.click()
-          }}
-        >
-          <ImageIcon className="h-4 w-4 mr-2" />
-          上传封面
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        {artist.name_noob && (
-          <DropdownMenuItem onClick={() => copyToClipboard(artist.name_noob)}>
-            <Copy className="h-4 w-4 mr-2" />
-            复制 NOOB 格式
-          </DropdownMenuItem>
-        )}
-        {artist.name_nai && (
-          <DropdownMenuItem onClick={() => copyToClipboard(artist.name_nai)}>
-            <Copy className="h-4 w-4 mr-2" />
-            复制 NAI 格式
-          </DropdownMenuItem>
-        )}
-        {artist.danbooru_link && (
-          <DropdownMenuItem
-            onClick={() => window.open(artist.danbooru_link, '_blank')}
-          >
-            <ExternalLink className="h-4 w-4 mr-2" />
-            打开 Danbooru
-          </DropdownMenuItem>
-        )}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onClick={() => {
-            setCurrentArtist(artist)
-            setIsDeleteDialogOpen(true)
-          }}
-          className="text-destructive focus:text-destructive"
-        >
-          <Trash2 className="h-4 w-4 mr-2" />
-          删除
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
+  )}
 
   return (
     <div className="flex-1 flex flex-col h-full">

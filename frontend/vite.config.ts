@@ -29,6 +29,7 @@ export default defineConfig({
     },
   },
   build: {
+    outDir: '../backend/dist',
     minify: 'esbuild',
     target: 'es2020',
     cssMinify: true,

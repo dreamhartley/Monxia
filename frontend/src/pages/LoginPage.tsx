@@ -84,7 +84,7 @@ export default function LoginPage() {
               梦匣
             </CardTitle>
             <CardDescription className="text-foreground/70">
-              探索造梦的世界
+              开启造梦世界
             </CardDescription>
           </CardHeader>
 

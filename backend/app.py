@@ -749,14 +749,27 @@ def api_import_json():
         categories_data = data.get('categories', [])
         artists_data = data.get('artists', [])
 
-        # 导入分类
+        # 导入分类（如果已存在则使用现有分类）
         category_map = {}  # 旧ID -> 新ID
+        existing_categories = {c['name']: c['id'] for c in get_all_categories()}
+
         for cat in categories_data:
             old_id = cat.get('id')
-            new_id = create_category(cat['name'])
+            cat_name = cat['name']
+
+            if cat_name in existing_categories:
+                # 分类已存在，使用现有ID
+                new_id = existing_categories[cat_name]
+            else:
+                # 创建新分类
+                new_id = create_category(cat_name)
+                existing_categories[cat_name] = new_id
+
             category_map[old_id] = new_id
 
         # 导入画师
+        imported_count = 0
+        updated_count = 0
         for artist in artists_data:
             # 处理多分类
             category_ids = []
@@ -782,19 +795,44 @@ def api_import_json():
                     category_ids = [uncategorized['id']]
 
             if category_ids:
-                create_artist(
-                    category_ids=category_ids,
+                # 检查画师是否已存在
+                existing_artist = check_artist_exists(
                     name_noob=artist.get('name_noob', ''),
                     name_nai=artist.get('name_nai', ''),
-                    danbooru_link=artist.get('danbooru_link', ''),
-                    post_count=artist.get('post_count'),
-                    notes=artist.get('notes', ''),
-                    image_example=artist.get('image_example', '')
+                    danbooru_link=artist.get('danbooru_link', '')
                 )
+
+                if existing_artist:
+                    # 画师已存在，更新信息但保留现有的 image_example
+                    update_artist(
+                        existing_artist['id'],
+                        category_ids=category_ids,
+                        name_noob=artist.get('name_noob', ''),
+                        name_nai=artist.get('name_nai', ''),
+                        danbooru_link=artist.get('danbooru_link', ''),
+                        post_count=artist.get('post_count'),
+                        notes=artist.get('notes', ''),
+                        # 不更新 image_example，保留现有图片
+                        skip_danbooru=artist.get('skip_danbooru', False)
+                    )
+                    updated_count += 1
+                else:
+                    # 新画师，创建时清空 image_example
+                    create_artist(
+                        category_ids=category_ids,
+                        name_noob=artist.get('name_noob', ''),
+                        name_nai=artist.get('name_nai', ''),
+                        danbooru_link=artist.get('danbooru_link', ''),
+                        post_count=artist.get('post_count'),
+                        notes=artist.get('notes', ''),
+                        image_example='',  # 新导入的画师清空图片路径，因为图片文件不会随数据一起迁移
+                        skip_danbooru=artist.get('skip_danbooru', False)
+                    )
+                    imported_count += 1
 
         return jsonify({
             "success": True,
-            "message": f"成功导入 {len(categories_data)} 个分类和 {len(artists_data)} 个画师"
+            "message": f"成功导入 {len(categories_data)} 个分类，新增 {imported_count} 个画师，更新 {updated_count} 个画师"
         })
     except Exception as e:
         logging.error(f"导入JSON失败: {e}")

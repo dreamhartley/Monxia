@@ -6,11 +6,13 @@ import logging
 import time
 import random
 import os
+import asyncio
 from io import BytesIO
 from pathlib import Path
 from typing import Optional, Dict, Tuple, List
 from PIL import Image
 from playwright.sync_api import sync_playwright, Page, Browser, BrowserContext
+from playwright.async_api import async_playwright, Page as AsyncPage
 
 logging.basicConfig(level=logging.INFO)
 
@@ -369,17 +371,233 @@ def get_post_count_and_image(page: Page, url: str, artist_identifier: str, artis
     return {'post_count': None, 'example_image': None}
 
 
-def fetch_post_counts_batch(artists: list) -> dict:
-    """
-    批量获取画师作品数量和示例图
-    artists: 列表,每个元素是字典 {'id': ..., 'uuid': ..., 'danbooru_link': ..., 'name': ...}
-    返回: {artist_id: {'post_count': int, 'example_image': str}}
-    """
+# -------------------------------
+# 异步版本的爬取函数（用于并行处理）
+# -------------------------------
+
+async def download_image_with_page_async(page: AsyncPage, url: str, artist_identifier: str, timeout: int = 30000) -> Optional[str]:
+    """异步版本：使用Playwright下载图片到本地"""
+    try:
+        logging.info(f"正在下载图片: {url[:80]}...")
+        response = await page.goto(url, timeout=timeout, wait_until='domcontentloaded')
+
+        if not response or response.status != 200:
+            logging.warning(f"图片下载失败: HTTP {response.status if response else 'None'}")
+            return None
+
+        image_content = await response.body()
+
+        try:
+            with Image.open(BytesIO(image_content)) as img:
+                if img.mode in ('RGBA', 'P', 'LA'):
+                    img = img.convert('RGB')
+
+                filename = f"{artist_identifier}.jpg"
+                filepath = IMAGES_DIR / filename
+
+                for old_file in IMAGES_DIR.glob(f"{artist_identifier}.*"):
+                    if old_file.name != filename:
+                        old_file.unlink()
+                        logging.info(f"删除旧图片: {old_file.name}")
+
+                img.save(filepath, 'JPEG', quality=80, optimize=True)
+                logging.info(f"图片已转换并保存为 JPEG: {filename}")
+                return filename
+        except Exception as e:
+            logging.error(f"图片处理失败: {e}")
+            return None
+
+    except Exception as e:
+        logging.warning(f"下载图片失败: {url} - {e}")
+        return None
+
+
+async def get_example_image_async(page: AsyncPage, artist_identifier: str, max_retries: int = 5) -> Optional[str]:
+    """异步版本：从当前页面随机获取一个有效的示例图片并下载到本地"""
+    try:
+        post_elements = await page.query_selector_all('article.post-preview img.post-preview-image')
+
+        if not post_elements:
+            logging.debug("未找到任何post预览图")
+            return None
+
+        tried_images = set()
+        context = page.context
+        download_page = await context.new_page()
+
+        try:
+            for attempt in range(max_retries):
+                if len(tried_images) >= len(post_elements):
+                    logging.warning(f"已尝试所有图片,但都无法下载")
+                    break
+
+                available_elements = []
+                for el in post_elements:
+                    src = await el.get_attribute('src')
+                    if src not in tried_images:
+                        available_elements.append(el)
+
+                if not available_elements:
+                    break
+
+                random_img = random.choice(available_elements)
+                img_src = await random_img.get_attribute('src')
+
+                if not img_src:
+                    logging.debug("图片src为空")
+                    continue
+
+                tried_images.add(img_src)
+                original_url = re.sub(r'/\d+x\d+/', '/original/', img_src)
+
+                logging.info(f"尝试下载图片 ({attempt + 1}/{max_retries}): {original_url[:80]}...")
+                filename = await download_image_with_page_async(download_page, original_url, artist_identifier)
+
+                if filename:
+                    logging.info(f"图片下载成功: {filename}")
+                    return filename
+                else:
+                    if original_url.lower().endswith('.jpg'):
+                        png_url = original_url[:-4] + '.png'
+                        logging.info(f"jpg格式失败，尝试png格式: {png_url[:80]}...")
+                        filename = await download_image_with_page_async(download_page, png_url, artist_identifier)
+
+                        if filename:
+                            logging.info(f"png格式下载成功: {filename}")
+                            return filename
+                        else:
+                            logging.warning(f"jpg和png格式都失败，尝试其他图片...")
+                    else:
+                        logging.warning(f"图片下载失败，尝试其他图片...")
+
+            logging.warning("未能下载有效的示例图")
+            return None
+        finally:
+            await download_page.close()
+
+    except Exception as e:
+        logging.warning(f"获取示例图失败: {e}")
+        return None
+
+
+async def get_post_count_and_image_async(page: AsyncPage, url: str, artist_identifier: str, artist_name: str, retry_count: int = 3) -> Dict[str, any]:
+    """异步版本：从Danbooru获取画师作品数量和示例图"""
+    for attempt in range(retry_count):
+        try:
+            logging.info(f"正在访问: {url}")
+            await page.goto(url, wait_until="networkidle", timeout=60000)
+            await page.wait_for_timeout(2000)
+
+            post_count = None
+            example_image = None
+
+            example_image = await get_example_image_async(page, artist_identifier)
+
+            try:
+                artist_link = await page.wait_for_selector('a#show-excerpt-link.artist-excerpt-link', timeout=5000)
+                if artist_link:
+                    await artist_link.click()
+                    await page.wait_for_load_state("networkidle")
+                    await page.wait_for_timeout(1500)
+                    post_count_element = await page.wait_for_selector('span.text-sm.post-count', timeout=5000)
+                    if post_count_element:
+                        post_count_text = await post_count_element.inner_text()
+                        match = re.search(r'\d+', post_count_text)
+                        if match:
+                            post_count = int(match.group())
+            except Exception as e:
+                logging.debug(f"未找到 artist-excerpt-link 或点击失败: {e}")
+
+            if post_count is None:
+                try:
+                    search_stats = await page.wait_for_selector('div.search-stats', timeout=10000, state='visible')
+                    if search_stats:
+                        stats_text = await search_stats.inner_text()
+                        match = re.search(r'(\d+)\s+posts?', stats_text)
+                        if match:
+                            post_count = int(match.group(1))
+                except Exception as e:
+                    logging.debug(f"未找到 search-stats 元素: {e}")
+
+            if post_count is None:
+                try:
+                    alt_selectors = [
+                        'div.paginator span',
+                        'div#posts-container',
+                        'span.post-count'
+                    ]
+                    for selector in alt_selectors:
+                        element = await page.query_selector(selector)
+                        if element:
+                            text = await element.inner_text()
+                            match = re.search(r'(\d+)\s+posts?', text)
+                            if match:
+                                post_count = int(match.group(1))
+                                break
+                except Exception as e:
+                    logging.debug(f"备用选择器未找到数据: {e}")
+
+            if post_count is None:
+                raise Exception("无法找到作品数量")
+
+            return {
+                'post_count': post_count,
+                'example_image': example_image
+            }
+
+        except Exception as e:
+            logging.warning(f"第 {attempt+1} 次尝试获取 {artist_name} 数据失败: {e}")
+            if attempt < retry_count - 1:
+                wait_time = 3 * (attempt + 1)
+                logging.info(f"等待 {wait_time} 秒后重试...")
+                await asyncio.sleep(wait_time)
+            else:
+                logging.error(f"未能获取画师 {artist_name} 的数据")
+
+    return {'post_count': None, 'example_image': None}
+
+
+async def _fetch_single_artist(semaphore: asyncio.Semaphore, context, artist: dict, worker_id: int) -> Tuple[int, Optional[Dict]]:
+    """异步获取单个画师数据（带信号量控制并发）"""
+    async with semaphore:
+        artist_id = artist['id']
+        artist_identifier = artist.get('uuid') or str(artist_id)
+        url = artist.get('danbooru_link', '')
+        name = artist.get('name', 'Unknown')
+
+        if not url or not url.strip():
+            return artist_id, None
+
+        page = await context.new_page()
+        page.set_default_timeout(60000)
+        page.set_default_navigation_timeout(60000)
+
+        try:
+            logging.info(f"[Worker-{worker_id}] 正在获取画师 {name} 的数据...")
+            result = await get_post_count_and_image_async(page, url, artist_identifier, name)
+
+            if result['post_count'] is not None:
+                logging.info(f"[Worker-{worker_id}] 画师 {name} - 作品数量: {result['post_count']}, 示例图: {result['example_image'] or 'None'}")
+                return artist_id, result
+            else:
+                logging.warning(f"[Worker-{worker_id}] 未能获取画师 {name} 的数据")
+                return artist_id, None
+        finally:
+            await page.close()
+            # 短暂等待避免请求过快
+            await asyncio.sleep(0.5)
+
+
+async def _fetch_post_counts_batch_async(artists: list, concurrency: int = 8) -> dict:
+    """内部异步函数：批量获取画师作品数量"""
     results = {}
 
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
-        context = browser.new_context(
+    if not artists:
+        return results
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        context = await browser.new_context(
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
             locale='en-US',
             timezone_id="Asia/Shanghai",
@@ -398,7 +616,7 @@ def fetch_post_counts_batch(artists: list) -> dict:
                 "Sec-CH-UA-Platform": '"Windows"',
             }
         )
-        context.add_init_script("""
+        await context.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => false,
             });
@@ -407,34 +625,43 @@ def fetch_post_counts_batch(artists: list) -> dict:
             });
         """)
 
-        page = context.new_page()
-        page.set_default_timeout(60000)
-        page.set_default_navigation_timeout(60000)
+        # 使用信号量控制并发数
+        semaphore = asyncio.Semaphore(concurrency)
 
-        for artist in artists:
-            artist_id = artist['id']
-            # 优先使用 UUID 作为图片标识符，如果没有则回退到 ID
-            artist_identifier = artist.get('uuid') or str(artist_id)
-            url = artist.get('danbooru_link', '')
-            name = artist.get('name', 'Unknown')
+        # 过滤有效画师
+        valid_artists = [a for a in artists if a.get('danbooru_link', '').strip()]
 
-            if not url or not url.strip():
+        # 创建所有任务
+        tasks = [
+            _fetch_single_artist(semaphore, context, artist, i % concurrency)
+            for i, artist in enumerate(valid_artists)
+        ]
+
+        # 并行执行所有任务
+        task_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 收集结果
+        for item in task_results:
+            if isinstance(item, Exception):
+                logging.error(f"任务异常: {item}")
                 continue
-
-            logging.info(f"正在获取画师 {name} 的数据...")
-            result = get_post_count_and_image(page, url, artist_identifier, name)
-
-            if result['post_count'] is not None:
+            artist_id, result = item
+            if result is not None:
                 results[artist_id] = result
-                logging.info(f"画师 {name} - 作品数量: {result['post_count']}, 示例图: {result['example_image'] or 'None'}")
-            else:
-                logging.warning(f"未能获取画师 {name} 的数据")
 
-            time.sleep(1)  # 避免请求过快
-
-        browser.close()
+        await browser.close()
 
     return results
+
+
+def fetch_post_counts_batch(artists: list, concurrency: int = 8) -> dict:
+    """
+    批量获取画师作品数量和示例图（并行版本）
+    artists: 列表,每个元素是字典 {'id': ..., 'uuid': ..., 'danbooru_link': ..., 'name': ...}
+    concurrency: 并行页面数量，默认8个
+    返回: {artist_id: {'post_count': int, 'example_image': str}}
+    """
+    return asyncio.run(_fetch_post_counts_batch_async(artists, concurrency))
 
 def get_artists_without_images(artists: list) -> list:
     """
@@ -462,80 +689,138 @@ def get_artists_without_images(artists: list) -> list:
     return missing_ids
 
 
-def fetch_post_counts_streaming(artists: list):
+def fetch_post_counts_streaming(artists: list, concurrency: int = 8):
     """
-    流式批量获取画师作品数量和示例图（生成器版本，用于SSE）
+    流式批量获取画师作品数量和示例图（并行生成器版本，用于SSE）
     artists: 列表,每个元素是字典 {'id': ..., 'uuid': ..., 'danbooru_link': ..., 'name': ...}
+    concurrency: 并行页面数量，默认8个
     生成: {'type': 'progress', ...} 或 {'type': 'result', ...}
     """
+    import queue
+    import threading
+
     total = len(artists)
+    if total == 0:
+        return
 
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-            locale='en-US',
-            timezone_id="Asia/Shanghai",
-            viewport={"width": 1920, "height": 1080},
-            device_scale_factor=1,
-            is_mobile=False,
-            has_touch=False,
-            extra_http_headers={
-                "Accept": "*/*",
-                "Accept-Encoding": "gzip, deflate, br, zstd",
-                "Accept-Language": "en-US,en;q=0.9",
-                "DNT": "1",
-                "Priority": "u=1, i",
-                "Sec-CH-UA": '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
-                "Sec-CH-UA-Mobile": "?0",
-                "Sec-CH-UA-Platform": '"Windows"',
-            }
-        )
-        context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => false,
-            });
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3],
-            });
-        """)
+    # 过滤有效画师（有链接的）
+    valid_artists = [a for a in artists if a.get('danbooru_link', '').strip()]
+    valid_total = len(valid_artists)
 
-        page = context.new_page()
-        page.set_default_timeout(60000)
-        page.set_default_navigation_timeout(60000)
+    if valid_total == 0:
+        yield {'type': 'progress', 'current': total, 'total': total, 'artist_name': '完成'}
+        return
 
-        for idx, artist in enumerate(artists):
-            artist_id = artist['id']
-            artist_identifier = artist.get('uuid') or str(artist_id)
-            url = artist.get('danbooru_link', '')
-            name = artist.get('name', 'Unknown')
+    # 线程安全的结果队列
+    result_queue = queue.Queue()
 
-            # 发送进度
-            yield {
-                'type': 'progress',
-                'current': idx + 1,
-                'total': total,
-                'artist_name': name
-            }
+    async def _streaming_worker():
+        """异步工作函数"""
+        completed_count = 0
 
-            if not url or not url.strip():
-                continue
-
-            logging.info(f"正在获取画师 {name} 的数据...")
-            result = get_post_count_and_image(page, url, artist_identifier, name)
-
-            # 发送结果
-            if result['post_count'] is not None:
-                yield {
-                    'type': 'result',
-                    'artist_id': artist_id,
-                    'artist_name': name,
-                    'result': result
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            context = await browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+                locale='en-US',
+                timezone_id="Asia/Shanghai",
+                viewport={"width": 1920, "height": 1080},
+                device_scale_factor=1,
+                is_mobile=False,
+                has_touch=False,
+                extra_http_headers={
+                    "Accept": "*/*",
+                    "Accept-Encoding": "gzip, deflate, br, zstd",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "DNT": "1",
+                    "Priority": "u=1, i",
+                    "Sec-CH-UA": '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
+                    "Sec-CH-UA-Mobile": "?0",
+                    "Sec-CH-UA-Platform": '"Windows"',
                 }
-                logging.info(f"画师 {name} - 作品数量: {result['post_count']}, 示例图: {result['example_image'] or 'None'}")
-            else:
-                logging.warning(f"未能获取画师 {name} 的数据")
+            )
+            await context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => false,
+                });
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3],
+                });
+            """)
 
-            time.sleep(1)
+            semaphore = asyncio.Semaphore(concurrency)
 
-        browser.close()
+            async def process_artist(artist: dict, worker_id: int):
+                nonlocal completed_count
+                async with semaphore:
+                    artist_id = artist['id']
+                    artist_identifier = artist.get('uuid') or str(artist_id)
+                    url = artist.get('danbooru_link', '')
+                    name = artist.get('name', 'Unknown')
+
+                    completed_count += 1
+                    result_queue.put({
+                        'type': 'progress',
+                        'current': completed_count,
+                        'total': valid_total,
+                        'artist_name': name
+                    })
+
+                    if not url or not url.strip():
+                        return
+
+                    page = await context.new_page()
+                    page.set_default_timeout(60000)
+                    page.set_default_navigation_timeout(60000)
+
+                    try:
+                        logging.info(f"[Worker-{worker_id}] 正在获取画师 {name} 的数据...")
+                        result = await get_post_count_and_image_async(page, url, artist_identifier, name)
+
+                        if result['post_count'] is not None:
+                            result_queue.put({
+                                'type': 'result',
+                                'artist_id': artist_id,
+                                'artist_name': name,
+                                'result': result
+                            })
+                            logging.info(f"[Worker-{worker_id}] 画师 {name} - 作品数量: {result['post_count']}, 示例图: {result['example_image'] or 'None'}")
+                        else:
+                            logging.warning(f"[Worker-{worker_id}] 未能获取画师 {name} 的数据")
+                    finally:
+                        await page.close()
+                        await asyncio.sleep(0.5)
+
+            # 创建所有任务并并行执行
+            tasks = [
+                process_artist(artist, i % concurrency)
+                for i, artist in enumerate(valid_artists)
+            ]
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+            await browser.close()
+
+        # 发送完成信号
+        result_queue.put({'type': 'done'})
+
+    def run_async_in_thread():
+        """在新线程中运行异步事件循环"""
+        asyncio.run(_streaming_worker())
+
+    # 启动异步工作线程
+    worker_thread = threading.Thread(target=run_async_in_thread)
+    worker_thread.start()
+
+    # 主线程从队列读取结果并 yield
+    while True:
+        try:
+            item = result_queue.get(timeout=120)  # 2分钟超时
+            if item['type'] == 'done':
+                break
+            yield item
+        except queue.Empty:
+            # 检查线程是否还在运行
+            if not worker_thread.is_alive():
+                break
+
+    worker_thread.join()
