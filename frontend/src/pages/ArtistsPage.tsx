@@ -73,7 +73,9 @@ import {
   type AutoCompleteProgress,
 } from '@/lib/api'
 import { Progress } from '@/components/ui/progress'
-import { PRESET_DRAFT_KEY, type PresetDraft, type ArtistTag } from './PresetsPage'
+import { PRESET_DRAFT_KEY, type PresetDraft, type ArtistTag, formatNoob, formatNai } from './PresetsPage'
+import { ChevronDown, Users } from 'lucide-react'
+import { useIsMobile } from '@/hooks/useMediaQuery'
 
 const API_BASE = '/api'
 
@@ -93,6 +95,8 @@ export default function ArtistsPage() {
   })
   const [sortOption, setSortOption] = useState<SortOption>('count_desc')
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false)
+  const [filtersExpanded, setFiltersExpanded] = useState(false)
+  const isMobile = useIsMobile()
   const [favorites, setFavorites] = useState<Set<number>>(() => {
     const saved = localStorage.getItem('artist_favorites')
     return saved ? new Set(JSON.parse(saved)) : new Set()
@@ -128,6 +132,10 @@ export default function ArtistsPage() {
 
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     const target = e.target as HTMLDivElement
+    // 只响应主 ScrollArea viewport 的滚动，忽略下拉框等子组件的滚动
+    if (!target.hasAttribute('data-radix-scroll-area-viewport')) {
+      return
+    }
     setShowBackToTop(target.scrollTop > 300)
   }, [])
 
@@ -171,6 +179,7 @@ export default function ArtistsPage() {
 
   // Dialog states
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false)
+  const [isBatchAddDialogOpen, setIsBatchAddDialogOpen] = useState(false)
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [currentArtist, setCurrentArtist] = useState<Artist | null>(null)
@@ -200,6 +209,20 @@ export default function ArtistsPage() {
 
   // Form states
   const [simpleAddName, setSimpleAddName] = useState('')
+  const [batchAddInput, setBatchAddInput] = useState('')
+  const [batchAddProgress, setBatchAddProgress] = useState<{
+    isProcessing: boolean
+    current: number
+    total: number
+    message: string
+    results: { added: string[]; skipped: string[]; failed: string[] }
+  }>({
+    isProcessing: false,
+    current: 0,
+    total: 0,
+    message: '',
+    results: { added: [], skipped: [], failed: [] },
+  })
   const [formData, setFormData] = useState<CreateArtistData & { notes?: string }>({
     category_ids: [],
     name_noob: '',
@@ -384,6 +407,187 @@ export default function ArtistsPage() {
       skip_danbooru: false,
     })
     setSimpleAddName('')
+  }
+
+  // 清洗画师输入，去除权重信息，返回纯净的画师名称
+  const cleanArtistInput = (input: string): string => {
+    let name = input.trim()
+    if (!name) return ''
+
+    // 检测并移除 NOOB 权重格式: (name:weight)
+    const noobWeightMatch = name.match(/^\((.+?):(\d+\.?\d*)\)$/)
+    if (noobWeightMatch) {
+      name = noobWeightMatch[1]
+    }
+
+    // 检测并移除 NAI 权重格式: weight::name::
+    const naiWeightMatch = name.match(/^(\d+\.?\d*)::(.+?)::$/)
+    if (naiWeightMatch) {
+      name = naiWeightMatch[2]
+    }
+
+    // 去除 artist: 前缀
+    if (name.startsWith('artist:')) {
+      name = name.slice(7)
+    }
+
+    // 去除转义括号 \( \) -> ( )
+    name = name.replace(/\\([()])/g, '$1')
+
+    // 将下划线替换为空格
+    name = name.replace(/_/g, ' ')
+
+    // 去除多余空格
+    name = name.replace(/\s+/g, ' ').trim()
+
+    return name
+  }
+
+  // 批量添加画师
+  const handleBatchAdd = async () => {
+    if (!batchAddInput.trim()) {
+      alert('请输入画师名称')
+      return
+    }
+
+    // 找到"未分类"分类
+    const uncategorizedCategory = categories.find(c => c.name === '未分类')
+    if (!uncategorizedCategory) {
+      alert('未找到"未分类"分类，请先创建')
+      return
+    }
+
+    // 解析输入，支持逗号和换行分隔
+    const rawNames = batchAddInput
+      .split(/[,，\n]/)
+      .map(s => s.trim())
+      .filter(Boolean)
+
+    // 清洗格式并去重
+    const cleanedNames = [...new Set(rawNames.map(cleanArtistInput).filter(Boolean))]
+
+    if (cleanedNames.length === 0) {
+      alert('没有有效的画师名称')
+      return
+    }
+
+    // 检查已存在的画师
+    const existingNames = new Set<string>()
+    for (const artist of artists) {
+      // 清洗已存在的画师名称用于比较
+      if (artist.name_noob) {
+        existingNames.add(cleanArtistInput(artist.name_noob).toLowerCase())
+      }
+      if (artist.name_nai) {
+        existingNames.add(cleanArtistInput(artist.name_nai).toLowerCase())
+      }
+    }
+
+    // 筛选出需要添加的画师
+    const toAdd = cleanedNames.filter(name => !existingNames.has(name.toLowerCase()))
+    const skipped = cleanedNames.filter(name => existingNames.has(name.toLowerCase()))
+
+    if (toAdd.length === 0) {
+      alert(`所有 ${cleanedNames.length} 个画师都已存在，无需添加`)
+      return
+    }
+
+    // 开始批量添加
+    setBatchAddProgress({
+      isProcessing: true,
+      current: 0,
+      total: toAdd.length,
+      message: '准备中...',
+      results: { added: [], skipped, failed: [] },
+    })
+
+    const added: string[] = []
+    const failed: string[] = []
+
+    for (let i = 0; i < toAdd.length; i++) {
+      const artistName = toAdd[i]
+      setBatchAddProgress(prev => ({
+        ...prev,
+        current: i + 1,
+        message: `正在添加: ${artistName}`,
+      }))
+
+      try {
+        // 1. 自动补全名称信息
+        const autoCompleteRes = await toolsApi.autoComplete(artistName, '', '')
+        let nameData = {
+          name_noob: formatNoob(artistName),
+          name_nai: formatNai(artistName),
+          danbooru_link: '',
+        }
+
+        if (autoCompleteRes.success && autoCompleteRes.data) {
+          nameData = {
+            name_noob: autoCompleteRes.data.name_noob || formatNoob(artistName),
+            name_nai: autoCompleteRes.data.name_nai || formatNai(artistName),
+            danbooru_link: autoCompleteRes.data.danbooru_link || '',
+          }
+        }
+
+        // 2. 创建画师
+        const createData = {
+          ...nameData,
+          category_ids: [uncategorizedCategory.id],
+          notes: '',
+          skip_danbooru: false,
+        }
+
+        const createRes = await artistApi.create(createData)
+
+        if (createRes.success && createRes.data) {
+          const newArtistId = createRes.data.id
+
+          // 3. 尝试获取作品数据 (如果有链接)
+          if (nameData.danbooru_link) {
+            try {
+              await toolsApi.fetchPostCounts([newArtistId])
+            } catch (e) {
+              console.warn(`Failed to fetch post count for ${artistName}:`, e)
+            }
+          }
+
+          added.push(artistName)
+        } else {
+          // 如果是重复画师错误，归入跳过
+          if (createRes.error?.includes('画师已存在')) {
+            skipped.push(artistName)
+          } else {
+            failed.push(artistName)
+          }
+        }
+      } catch (e) {
+        console.error(`Failed to add artist ${artistName}:`, e)
+        failed.push(artistName)
+      }
+    }
+
+    // 完成
+    setBatchAddProgress(prev => ({
+      ...prev,
+      isProcessing: false,
+      message: '完成',
+      results: { added, skipped, failed },
+    }))
+
+    // 刷新数据
+    await loadData()
+  }
+
+  // 重置批量添加状态
+  const resetBatchAdd = () => {
+    setBatchAddInput('')
+    setBatchAddProgress({
+      isProcessing: false,
+      current: 0,
+      total: 0,
+      message: '',
+      results: { added: [], skipped: [], failed: [] },
+    })
   }
 
   // 打开添加对话框
@@ -784,10 +988,10 @@ export default function ArtistsPage() {
           className={
             isListView
               ? 'h-8 w-8 bg-secondary/50'
-              : 'absolute top-2 right-2 h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity bg-background/80 backdrop-blur-sm'
+              : 'absolute top-1 right-1 md:top-2 md:right-2 h-7 w-7 md:h-8 md:w-8 transition-opacity bg-background/80 backdrop-blur-sm [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100'
           }
         >
-          <MoreHorizontal className="h-4 w-4" />
+          <MoreHorizontal className="h-3.5 w-3.5 md:h-4 md:w-4" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
@@ -860,7 +1064,7 @@ export default function ArtistsPage() {
       className="group bg-card/80 backdrop-blur-sm border-border/50 hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5 transition-all duration-300 overflow-hidden"
     >
       {/* 图片区域 */}
-      <div className="aspect-video bg-secondary/30 relative overflow-hidden">
+      <div className="aspect-[4/3] md:aspect-video bg-secondary/30 relative overflow-hidden">
         {hasValidImage ? (
           <img
             src={`${API_BASE.replace('/api', '')}/images/${artist.image_example}`}
@@ -880,7 +1084,7 @@ export default function ArtistsPage() {
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
-            <ImageIcon className="h-12 w-12 text-muted-foreground/30" />
+            <ImageIcon className="h-8 w-8 md:h-12 md:w-12 text-muted-foreground/30" />
           </div>
         )}
         {/* 操作菜单 */}
@@ -888,7 +1092,7 @@ export default function ArtistsPage() {
 
         {/* 收藏标记 */}
         {favorites.has(artist.id) && (
-          <Star className="absolute top-2 left-2 h-5 w-5 text-[#FFFACD] fill-[#FFFACD] drop-shadow-md" />
+          <Star className="absolute top-1.5 left-1.5 md:top-2 md:left-2 h-4 w-4 md:h-5 md:w-5 text-[#FFFACD] fill-[#FFFACD] drop-shadow-md" />
         )}
 
       </div>
@@ -910,42 +1114,62 @@ export default function ArtistsPage() {
       />
 
       {/* 信息区域 */}
-      <CardContent className="p-4">
+      <CardContent className="p-2 md:p-4 relative">
         {/* 上半部分：名称、分类、备注 */}
-        <div className="flex gap-2 items-start mb-2">
+        <div className="flex gap-2 items-start md:mb-2">
           <div className="flex-1 min-w-0">
-            <h3 className="font-semibold text-foreground truncate mb-1">
+            <h3 className="font-semibold text-foreground truncate text-xs md:text-base mb-0.5 md:mb-1">
               {getDisplayName(artist)}
             </h3>
             {/* 标签区域 - 单行显示，右侧截断 */}
             <div className="relative overflow-hidden">
-              <div className="flex flex-nowrap gap-1 overflow-hidden">
-                {artist.categories?.map((cat) => (
-                  <Badge key={cat.id} variant="secondary" className="text-xs shrink-0">
+              <div className="flex flex-nowrap gap-0.5 md:gap-1 overflow-hidden">
+                {artist.categories?.slice(0, isMobile ? 1 : undefined).map((cat) => (
+                  <Badge key={cat.id} variant="secondary" className="text-[10px] md:text-xs px-1 md:px-2 shrink-0">
                     {cat.name}
                   </Badge>
                 ))}
+                {isMobile && artist.categories && artist.categories.length > 1 && (
+                  <Badge variant="outline" className="text-[10px] px-1 shrink-0">
+                    +{artist.categories.length - 1}
+                  </Badge>
+                )}
               </div>
-              {/* 渐变遮罩 - 当标签可能超出时显示 */}
-              {artist.categories && artist.categories.length > 2 && (
+              {/* 渐变遮罩 - 当标签可能超出时显示（仅桌面端） */}
+              {!isMobile && artist.categories && artist.categories.length > 2 && (
                 <div className="absolute right-0 top-0 bottom-0 w-8 bg-gradient-to-l from-card to-transparent pointer-events-none" />
               )}
             </div>
+            {/* 移动端：作品数显示在分类下方 */}
+            {isMobile && (
+              <div className="text-[10px] text-muted-foreground mt-0.5">
+                <span className="text-primary font-medium">{artist.post_count?.toLocaleString() || '-'}</span>
+                <span className="ml-0.5">作品</span>
+              </div>
+            )}
           </div>
-          {/* 备注区域 */}
-          {artist.notes && (
+          {/* 备注区域 - 桌面端 */}
+          {!isMobile && artist.notes && (
             <div className="shrink-0 w-24 h-10 border border-border/50 rounded-md p-1 overflow-y-auto bg-secondary/10 text-[10px] text-muted-foreground leading-tight">
               {artist.notes}
             </div>
           )}
         </div>
-        {/* 下半部分：作品数 */}
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-muted-foreground">作品数</span>
-          <span className="font-medium text-primary">
-            {artist.post_count?.toLocaleString() || '-'}
-          </span>
-        </div>
+        {/* 移动端：备注显示在右下角（绝对定位） */}
+        {isMobile && artist.notes && (
+          <div className="absolute bottom-1.5 right-1.5 max-w-[50%] px-1.5 py-0.5 rounded bg-secondary/80 backdrop-blur-sm text-[10px] text-muted-foreground line-clamp-1 leading-tight">
+            {artist.notes}
+          </div>
+        )}
+        {/* 下半部分：作品数（仅桌面端） */}
+        {!isMobile && (
+          <div className="flex items-center justify-between text-xs md:text-sm">
+            <span className="text-muted-foreground">作品数</span>
+            <span className="font-medium text-primary">
+              {artist.post_count?.toLocaleString() || '-'}
+            </span>
+          </div>
+        )}
       </CardContent>
     </Card>
   )}
@@ -954,6 +1178,106 @@ export default function ArtistsPage() {
   const renderListCard = (artist: Artist) => {
     const hasValidImage = artist.image_example && !failedImages.has(artist.id)
 
+    // 移动端列表卡片 - 紧凑双行布局
+    if (isMobile) {
+      return (
+        <Card
+          key={artist.id}
+          className="group bg-card/80 backdrop-blur-sm border-border/50 hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5 transition-all duration-300"
+        >
+          <CardContent className="p-3">
+            <div className="flex items-start gap-3">
+              {/* 缩略图 */}
+              <div className="w-14 h-14 shrink-0 rounded-lg bg-secondary/30 overflow-hidden relative">
+                {hasValidImage ? (
+                  <img
+                    src={`${API_BASE.replace('/api', '')}/images/${artist.image_example}`}
+                    alt={artist.name_noob || artist.name_nai}
+                    className="w-full h-full object-cover object-top cursor-pointer"
+                    onError={() => handleImageError(artist.id)}
+                    onClick={(e) => {
+                      const rect = e.currentTarget.getBoundingClientRect()
+                      setPreviewImage({
+                        url: `${API_BASE.replace('/api', '')}/images/${artist.image_example}`,
+                        origin: {
+                          x: rect.left + rect.width / 2,
+                          y: rect.top + rect.height / 2,
+                        },
+                      })
+                    }}
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center">
+                    <ImageIcon className="h-5 w-5 text-muted-foreground/30" />
+                  </div>
+                )}
+                {/* 收藏标记 */}
+                {favorites.has(artist.id) && (
+                  <Star className="absolute top-0.5 left-0.5 h-3.5 w-3.5 text-[#FFFACD] fill-[#FFFACD] drop-shadow-md" />
+                )}
+              </div>
+
+              {/* 中间信息区域 */}
+              <div className="flex-1 min-w-0">
+                {/* 第一行：名称 */}
+                <h3 className="font-semibold text-foreground truncate text-sm">
+                  {getDisplayName(artist)}
+                </h3>
+                {/* 第二行：分类标签 */}
+                <div className="relative mt-1 overflow-hidden">
+                  <div className="flex flex-nowrap gap-1 overflow-hidden">
+                    {artist.categories?.slice(0, 2).map((cat) => (
+                      <Badge key={cat.id} variant="secondary" className="text-[10px] px-1.5 py-0 shrink-0">
+                        {cat.name}
+                      </Badge>
+                    ))}
+                    {artist.categories && artist.categories.length > 2 && (
+                      <Badge variant="outline" className="text-[10px] px-1.5 py-0 shrink-0">
+                        +{artist.categories.length - 2}
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+                {/* 第三行：作品数 + 备注预览 */}
+                <div className="flex items-center gap-2 mt-1.5 text-xs text-muted-foreground">
+                  <span className="shrink-0">
+                    <span className="text-primary font-medium">{artist.post_count?.toLocaleString() || '-'}</span>
+                    <span className="ml-1">作品</span>
+                  </span>
+                  {artist.notes && (
+                    <>
+                      <span className="text-border">|</span>
+                      <span className="truncate">{artist.notes}</span>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* 右侧操作菜单 */}
+              <div className="shrink-0">
+                {renderDropdownMenu(artist, true)}
+              </div>
+            </div>
+            {/* 隐藏的文件输入框 */}
+            <input
+              type="file"
+              id={`file-input-${artist.id}`}
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0]
+                if (file) {
+                  handleUploadImage(file, artist.id)
+                }
+                e.target.value = ''
+              }}
+            />
+          </CardContent>
+        </Card>
+      )
+    }
+
+    // 桌面端列表卡片 - 原有布局
     return (
     <Card
       key={artist.id}
@@ -1052,171 +1376,289 @@ export default function ArtistsPage() {
   return (
     <div className="flex-1 flex flex-col h-full">
       {/* 顶部标题栏 */}
-      <header className="shrink-0 h-16 border-b border-border/50 bg-card/30 backdrop-blur-sm px-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-foreground">画师管理</h1>
-          <p className="text-sm text-muted-foreground">管理画师收藏库</p>
+      <header className="shrink-0 h-14 md:h-16 border-b border-border/50 bg-card/30 backdrop-blur-sm px-4 md:px-6 flex items-center justify-between">
+        <div className="min-w-0">
+          <h1 className="text-lg md:text-xl font-semibold text-foreground">画师管理</h1>
+          <p className="text-sm text-muted-foreground hidden sm:block">管理画师收藏库</p>
         </div>
-        <Button onClick={openAddDialog} className="gap-2">
-          <Plus className="h-4 w-4" />
-          添加画师
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button className="gap-2 shrink-0">
+              <Plus className="h-4 w-4" />
+              <span className="hidden sm:inline">添加画师</span>
+              <span className="sm:hidden">添加</span>
+              <ChevronDown className="h-3 w-3 opacity-60" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={openAddDialog}>
+              <Plus className="h-4 w-4 mr-2" />
+              单个添加
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => {
+              resetBatchAdd()
+              setIsBatchAddDialogOpen(true)
+            }}>
+              <Users className="h-4 w-4 mr-2" />
+              批量添加
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </header>
 
       {/* 画师列表 */}
       <ScrollArea className="flex-1" ref={scrollAreaRef} onScrollCapture={handleScroll}>
         {/* 筛选栏 - 放在 ScrollArea 内部实现毛玻璃效果 */}
-        <div className="px-6 py-4 bg-background/60 backdrop-blur-md border-b border-border/30 sticky top-0 z-10">
-          <div className="max-w-6xl mx-auto flex gap-3 items-center">
-          {/* 收藏筛选按钮 */}
-          <Button
-            variant={showFavoritesOnly ? 'default' : 'outline'}
-            size="icon"
-            onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
-            className="shrink-0"
-            title={showFavoritesOnly ? '显示全部' : '仅显示收藏'}
-          >
-            <Star className={`h-4 w-4 ${showFavoritesOnly ? 'fill-current' : ''}`} />
-          </Button>
-          <div className="relative flex-1 max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="搜索画师..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 pr-8 bg-card/50 border-border/50"
-            />
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+        <div className="px-4 md:px-6 py-3 md:py-4 bg-background/60 backdrop-blur-md border-b border-border/30 sticky top-0 z-10">
+          {/* 移动端筛选栏 */}
+          {isMobile ? (
+            <div className="space-y-3">
+              {/* 第一行：搜索框 + 筛选按钮 */}
+              <div className="flex gap-2 items-center">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="搜索画师..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="pl-9 pr-8 h-10 bg-card/50 border-border/50"
+                  />
+                  {searchQuery && (
+                    <button
+                      onClick={() => setSearchQuery('')}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+                <Button
+                  variant={filtersExpanded ? 'secondary' : 'outline'}
+                  size="icon"
+                  className="h-10 w-10 shrink-0"
+                  onClick={() => setFiltersExpanded(!filtersExpanded)}
+                >
+                  <Filter className="h-4 w-4" />
+                </Button>
+              </div>
+
+              {/* 展开的筛选项 */}
+              {filtersExpanded && (
+                <div className="space-y-2 pt-2 border-t border-border/30">
+                  <div className="flex gap-2">
+                    <Select value={selectedCategory} onValueChange={handleCategoryChange}>
+                      <SelectTrigger className="flex-1 h-10 bg-card/50 border-border/50">
+                        <SelectValue placeholder="分类" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">全部分类</SelectItem>
+                        <SelectItem value="incomplete">待补全</SelectItem>
+                        {sortedCategories.map((cat) => (
+                          <SelectItem key={cat.id} value={cat.id.toString()}>
+                            {cat.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Select value={sortOption} onValueChange={(v) => setSortOption(v as SortOption)}>
+                      <SelectTrigger className="flex-1 h-10 bg-card/50 border-border/50">
+                        <SelectValue placeholder="排序" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="count_desc">作品数 ↓</SelectItem>
+                        <SelectItem value="count_asc">作品数 ↑</SelectItem>
+                        <SelectItem value="date_desc">添加时间 ↓</SelectItem>
+                        <SelectItem value="date_asc">添加时间 ↑</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      variant={showFavoritesOnly ? 'default' : 'outline'}
+                      className="flex-1 h-10"
+                      onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
+                    >
+                      <Star className={`h-4 w-4 mr-2 ${showFavoritesOnly ? 'fill-current' : ''}`} />
+                      收藏
+                    </Button>
+                    <div className="flex border rounded-md bg-card/50 border-border/50">
+                      <Button
+                        variant={viewMode === 'grid' ? 'secondary' : 'ghost'}
+                        size="icon"
+                        className="h-10 w-10 rounded-r-none"
+                        onClick={() => setViewMode('grid')}
+                      >
+                        <LayoutGrid className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant={viewMode === 'list' ? 'secondary' : 'ghost'}
+                        size="icon"
+                        className="h-10 w-10 rounded-l-none"
+                        onClick={() => setViewMode('list')}
+                      >
+                        <List className="h-4 w-4" />
+                      </Button>
+                    </div>
+                    <Button variant="outline" onClick={loadData} size="icon" className="h-10 w-10 shrink-0">
+                      <RefreshCw className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            /* 桌面端筛选栏 */
+            <div className="max-w-6xl mx-auto flex gap-3 items-center">
+              {/* 收藏筛选按钮 */}
+              <Button
+                variant={showFavoritesOnly ? 'default' : 'outline'}
+                size="icon"
+                onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
+                className="shrink-0"
+                title={showFavoritesOnly ? '显示全部' : '仅显示收藏'}
               >
-                <X className="h-4 w-4" />
-              </button>
-            )}
-          </div>
-          <Select value={selectedCategory} onValueChange={handleCategoryChange}>
-            <SelectTrigger className="w-40 bg-card/50 border-border/50">
-              <Filter className="h-4 w-4 mr-2 text-muted-foreground" />
-              <SelectValue placeholder="筛选分类" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">全部分类</SelectItem>
-              <SelectItem value="incomplete">待补全</SelectItem>
-              {sortedCategories.map((cat) => (
-                <SelectItem key={cat.id} value={cat.id.toString()}>
-                  {cat.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+                <Star className={`h-4 w-4 ${showFavoritesOnly ? 'fill-current' : ''}`} />
+              </Button>
+              <div className="relative flex-1 max-w-sm">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="搜索画师..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-9 pr-8 bg-card/50 border-border/50"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+              <Select value={selectedCategory} onValueChange={handleCategoryChange}>
+                <SelectTrigger className="w-40 bg-card/50 border-border/50">
+                  <Filter className="h-4 w-4 mr-2 text-muted-foreground" />
+                  <SelectValue placeholder="筛选分类" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">全部分类</SelectItem>
+                  <SelectItem value="incomplete">待补全</SelectItem>
+                  {sortedCategories.map((cat) => (
+                    <SelectItem key={cat.id} value={cat.id.toString()}>
+                      {cat.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
 
-          {/* 排序 */}
-          <Select value={sortOption} onValueChange={(v) => setSortOption(v as SortOption)}>
-            <SelectTrigger className="w-40 bg-card/50 border-border/50">
-              <ArrowUpDown className="h-4 w-4 mr-2 text-muted-foreground" />
-              <SelectValue placeholder="排序方式" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="count_desc">作品数 ↓</SelectItem>
-              <SelectItem value="count_asc">作品数 ↑</SelectItem>
-              <SelectItem value="date_desc">添加时间 ↓</SelectItem>
-              <SelectItem value="date_asc">添加时间 ↑</SelectItem>
-            </SelectContent>
-          </Select>
+              {/* 排序 */}
+              <Select value={sortOption} onValueChange={(v) => setSortOption(v as SortOption)}>
+                <SelectTrigger className="w-40 bg-card/50 border-border/50">
+                  <ArrowUpDown className="h-4 w-4 mr-2 text-muted-foreground" />
+                  <SelectValue placeholder="排序方式" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="count_desc">作品数 ↓</SelectItem>
+                  <SelectItem value="count_asc">作品数 ↑</SelectItem>
+                  <SelectItem value="date_desc">添加时间 ↓</SelectItem>
+                  <SelectItem value="date_asc">添加时间 ↑</SelectItem>
+                </SelectContent>
+              </Select>
 
-          {/* 视图切换 */}
-          <div className="flex border rounded-md bg-card/50 border-border/50">
-            <Button
-              variant={viewMode === 'grid' ? 'secondary' : 'ghost'}
-              size="icon"
-              className="h-9 w-9 rounded-r-none"
-              onClick={() => setViewMode('grid')}
-            >
-              <LayoutGrid className="h-4 w-4" />
-            </Button>
-            <Button
-              variant={viewMode === 'list' ? 'secondary' : 'ghost'}
-              size="icon"
-              className="h-9 w-9 rounded-l-none"
-              onClick={() => setViewMode('list')}
-            >
-              <List className="h-4 w-4" />
-            </Button>
-          </div>
+              {/* 视图切换 */}
+              <div className="flex border rounded-md bg-card/50 border-border/50">
+                <Button
+                  variant={viewMode === 'grid' ? 'secondary' : 'ghost'}
+                  size="icon"
+                  className="h-9 w-9 rounded-r-none"
+                  onClick={() => setViewMode('grid')}
+                >
+                  <LayoutGrid className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant={viewMode === 'list' ? 'secondary' : 'ghost'}
+                  size="icon"
+                  className="h-9 w-9 rounded-l-none"
+                  onClick={() => setViewMode('list')}
+                >
+                  <List className="h-4 w-4" />
+                </Button>
+              </div>
 
-          <Button variant="outline" onClick={loadData} className="gap-2">
-            <RefreshCw className="h-4 w-4" />
-            刷新
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => {
-              if (!confirm('确定要对所有画师进行自动数据补全吗？这可能需要一些时间。')) return
+              <Button variant="outline" onClick={loadData} className="gap-2">
+                <RefreshCw className="h-4 w-4" />
+                刷新
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  if (!confirm('确定要对所有画师进行自动数据补全吗？这可能需要一些时间。')) return
 
-              // 打开进度弹窗
-              setAutoCompleteProgress({
-                isOpen: true,
-                phase: 'names',
-                current: 0,
-                total: 0,
-                artistName: '准备中...',
-                message: '正在初始化...',
-              })
-
-              // 使用流式API
-              toolsApi.autoCompleteAllStream((data: AutoCompleteProgress) => {
-                if (data.type === 'start') {
-                  setAutoCompleteProgress((prev) => ({
-                    ...prev,
-                    total: data.total || 0,
-                    message: `共 ${data.total} 个画师`,
-                  }))
-                } else if (data.type === 'progress') {
-                  setAutoCompleteProgress((prev) => ({
-                    ...prev,
-                    phase: data.phase || prev.phase,
-                    current: data.current || 0,
-                    total: data.total || prev.total,
-                    artistName: data.artist_name || '',
-                    message:
-                      data.phase === 'names'
-                        ? `正在补全名称信息 (${data.current}/${data.total})`
-                        : `正在获取作品数据 (${data.current}/${data.total})`,
-                  }))
-                } else if (data.type === 'phase') {
-                  setAutoCompleteProgress((prev) => ({
-                    ...prev,
-                    phase: data.phase || prev.phase,
+                  // 打开进度弹窗
+                  setAutoCompleteProgress({
+                    isOpen: true,
+                    phase: 'names',
                     current: 0,
-                    total: data.total || 0,
-                    message: data.message || '',
-                  }))
-                } else if (data.type === 'complete') {
-                  setAutoCompleteProgress((prev) => ({
-                    ...prev,
-                    isOpen: false,
-                  }))
-                  alert(data.message || '补全完成')
-                  loadData()
-                } else if (data.type === 'error') {
-                  setAutoCompleteProgress((prev) => ({
-                    ...prev,
-                    isOpen: false,
-                  }))
-                  alert(data.error || '补全失败')
-                }
-              })
-            }}
-            className="gap-2"
-          >
-            <Sparkles className="h-4 w-4" />
-            一键自动补全
-          </Button>
-          </div>
+                    total: 0,
+                    artistName: '准备中...',
+                    message: '正在初始化...',
+                  })
+
+                  // 使用流式API
+                  toolsApi.autoCompleteAllStream((data: AutoCompleteProgress) => {
+                    if (data.type === 'start') {
+                      setAutoCompleteProgress((prev) => ({
+                        ...prev,
+                        total: data.total || 0,
+                        message: `共 ${data.total} 个画师`,
+                      }))
+                    } else if (data.type === 'progress') {
+                      setAutoCompleteProgress((prev) => ({
+                        ...prev,
+                        phase: data.phase || prev.phase,
+                        current: data.current || 0,
+                        total: data.total || prev.total,
+                        artistName: data.artist_name || '',
+                        message:
+                          data.phase === 'names'
+                            ? `正在补全名称信息 (${data.current}/${data.total})`
+                            : `正在获取作品数据 (${data.current}/${data.total})`,
+                      }))
+                    } else if (data.type === 'phase') {
+                      setAutoCompleteProgress((prev) => ({
+                        ...prev,
+                        phase: data.phase || prev.phase,
+                        current: 0,
+                        total: data.total || 0,
+                        message: data.message || '',
+                      }))
+                    } else if (data.type === 'complete') {
+                      setAutoCompleteProgress((prev) => ({
+                        ...prev,
+                        isOpen: false,
+                      }))
+                      alert(data.message || '补全完成')
+                      loadData()
+                    } else if (data.type === 'error') {
+                      setAutoCompleteProgress((prev) => ({
+                        ...prev,
+                        isOpen: false,
+                      }))
+                      alert(data.error || '补全失败')
+                    }
+                  })
+                }}
+                className="gap-2"
+              >
+                <Sparkles className="h-4 w-4" />
+                一键自动补全
+              </Button>
+            </div>
+          )}
         </div>
 
-        <div className="px-6 pb-6">
+        <div className="px-4 md:px-6 pb-6">
         <div className="max-w-6xl mx-auto">
           {loading ? (
             <div className="flex items-center justify-center h-64">
@@ -1263,7 +1705,7 @@ export default function ArtistsPage() {
               )}
             </div>
           ) : viewMode === 'grid' ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 pb-4">
+            <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 md:gap-4 pb-4">
               {filteredArtists.map(renderGridCard)}
             </div>
           ) : (
@@ -1439,9 +1881,10 @@ export default function ArtistsPage() {
               </p>
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className="flex-row gap-2 sm:gap-2">
             <Button
               variant="outline"
+              className="flex-1"
               onClick={() => {
                 setIsAddDialogOpen(false)
                 resetForm()
@@ -1449,10 +1892,114 @@ export default function ArtistsPage() {
             >
               取消
             </Button>
-            <Button onClick={handleSimpleAdd} disabled={formLoading}>
+            <Button className="flex-1" onClick={handleSimpleAdd} disabled={formLoading}>
               {formLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               添加
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 批量添加画师对话框 */}
+      <Dialog open={isBatchAddDialogOpen} onOpenChange={(open) => {
+        if (!open && !batchAddProgress.isProcessing) {
+          setIsBatchAddDialogOpen(false)
+        }
+      }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Users className="h-5 w-5" />
+              批量添加画师
+            </DialogTitle>
+            <DialogDescription>
+              输入多个画师名称，支持逗号或换行分隔。系统将自动清洗格式、去重并获取数据。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            {/* 输入框 */}
+            <div className="space-y-2">
+              <Label htmlFor="batch_input">画师名称</Label>
+              <Textarea
+                id="batch_input"
+                value={batchAddInput}
+                onChange={(e) => setBatchAddInput(e.target.value)}
+                rows={6}
+                disabled={batchAddProgress.isProcessing}
+                className="font-mono text-sm"
+              />
+            </div>
+
+            {/* 进度显示 */}
+            {batchAddProgress.isProcessing && (
+              <div className="space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">{batchAddProgress.message}</span>
+                  <span className="font-medium">
+                    {batchAddProgress.current}/{batchAddProgress.total}
+                  </span>
+                </div>
+                <Progress
+                  value={batchAddProgress.total > 0
+                    ? (batchAddProgress.current / batchAddProgress.total) * 100
+                    : 0}
+                  className="h-2"
+                />
+              </div>
+            )}
+
+            {/* 结果显示 */}
+            {!batchAddProgress.isProcessing && batchAddProgress.message === '完成' && (
+              <div className="space-y-2 text-sm">
+                {batchAddProgress.results.added.length > 0 && (
+                  <div className="bg-green-500/10 text-green-600 dark:text-green-400 rounded-md p-3">
+                    <p className="font-medium mb-1">✓ 成功添加 {batchAddProgress.results.added.length} 个画师</p>
+                    <p className="text-xs opacity-80 line-clamp-2">
+                      {batchAddProgress.results.added.join(', ')}
+                    </p>
+                  </div>
+                )}
+                {batchAddProgress.results.skipped.length > 0 && (
+                  <div className="bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 rounded-md p-3">
+                    <p className="font-medium mb-1">⊘ 跳过 {batchAddProgress.results.skipped.length} 个已存在</p>
+                    <p className="text-xs opacity-80 line-clamp-2">
+                      {batchAddProgress.results.skipped.join(', ')}
+                    </p>
+                  </div>
+                )}
+                {batchAddProgress.results.failed.length > 0 && (
+                  <div className="bg-red-500/10 text-red-600 dark:text-red-400 rounded-md p-3">
+                    <p className="font-medium mb-1">✗ 失败 {batchAddProgress.results.failed.length} 个</p>
+                    <p className="text-xs opacity-80 line-clamp-2">
+                      {batchAddProgress.results.failed.join(', ')}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <DialogFooter className="flex-row gap-2 sm:gap-2">
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={() => {
+                setIsBatchAddDialogOpen(false)
+                resetBatchAdd()
+              }}
+              disabled={batchAddProgress.isProcessing}
+            >
+              {batchAddProgress.message === '完成' ? '关闭' : '取消'}
+            </Button>
+            {batchAddProgress.message !== '完成' && (
+              <Button
+                className="flex-1"
+                onClick={handleBatchAdd}
+                disabled={batchAddProgress.isProcessing || !batchAddInput.trim()}
+              >
+                {batchAddProgress.isProcessing && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                {batchAddProgress.isProcessing ? '添加中...' : '开始添加'}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1628,14 +2175,14 @@ export default function ArtistsPage() {
                 勾选后将不会自动从 Danbooru 获取作品数据和封面图片
               </p>
             </div>
-          </div>
-          <DialogFooter>
+
+            {/* 自动补全按钮 */}
             <Button
               type="button"
               variant="secondary"
               onClick={handleManualAutoComplete}
               disabled={formLoading}
-              className="gap-2 mr-auto"
+              className="gap-2 w-full sm:w-auto"
             >
               {formLoading ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -1644,10 +2191,12 @@ export default function ArtistsPage() {
               )}
               自动补全
             </Button>
-            <Button variant="outline" onClick={handleEditCancel}>
+          </div>
+          <DialogFooter className="flex-row gap-2 sm:gap-2">
+            <Button variant="outline" onClick={handleEditCancel} className="flex-1">
               取消
             </Button>
-            <Button onClick={handleEditArtist} disabled={formLoading}>
+            <Button onClick={handleEditArtist} disabled={formLoading} className="flex-1">
               {formLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               保存
             </Button>
@@ -1666,8 +2215,9 @@ export default function ArtistsPage() {
               吗？此操作不可撤销。
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter>
+          <AlertDialogFooter className="flex-row gap-2 sm:gap-2">
             <AlertDialogCancel
+              className="flex-1 mt-0"
               onClick={() => {
                 setIsDeleteDialogOpen(false)
                 setCurrentArtist(null)
@@ -1676,8 +2226,8 @@ export default function ArtistsPage() {
               取消
             </AlertDialogCancel>
             <AlertDialogAction
+              className="flex-1 bg-destructive hover:bg-destructive/90"
               onClick={handleDeleteArtist}
-              className="bg-destructive hover:bg-destructive/90"
             >
               {formLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               删除

@@ -325,17 +325,17 @@ export default function SettingsPage() {
   return (
     <div className="flex-1 flex flex-col h-full">
       {/* 顶部标题栏 */}
-      <header className="shrink-0 h-16 border-b border-border/50 bg-card/30 backdrop-blur-sm px-6 flex items-center">
+      <header className="shrink-0 h-14 md:h-16 border-b border-border/50 bg-card/30 backdrop-blur-sm px-4 md:px-6 flex items-center">
         <div className="flex items-center gap-3">
           <div>
-            <h1 className="text-xl font-semibold text-foreground">设置</h1>
-            <p className="text-sm text-muted-foreground">管理应用配置和数据</p>
+            <h1 className="text-lg md:text-xl font-semibold text-foreground">设置</h1>
+            <p className="text-sm text-muted-foreground hidden sm:block">管理应用配置和数据</p>
           </div>
         </div>
       </header>
 
       {/* 内容区域 */}
-      <ScrollArea className="flex-1 p-6">
+      <ScrollArea className="flex-1 p-4 md:p-6">
         <div className="max-w-3xl mx-auto space-y-6 pb-8">
           {/* 消息提示 */}
           {message && (
