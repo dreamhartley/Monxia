@@ -37,7 +37,7 @@ from utils import (
 # 前端静态文件目录
 FRONTEND_DIST_DIR = Path(__file__).parent / 'dist'
 
-app = Flask(__name__, static_folder=str(FRONTEND_DIST_DIR), static_url_path='')
+app = Flask(__name__, static_folder=None)
 
 # 配置Flask（使用数据库中的 SECRET_KEY）
 app.config['SECRET_KEY'] = get_secret_key()
