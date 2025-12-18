@@ -13,6 +13,10 @@
 ![React](https://img.shields.io/badge/react-19-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-ready-blue.svg)
 
+<p align="center">
+  <img src="https://files.catbox.moe/e2bs05.jpg" alt="Monxia Screenshot" width="800">
+</p>
+
 ## ✨ 功能特性
 
 - **🎨 画师库管理**
