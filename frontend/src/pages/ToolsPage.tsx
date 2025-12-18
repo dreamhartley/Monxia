@@ -4,10 +4,10 @@ export default function ToolsPage() {
   return (
     <div className="flex-1 flex flex-col h-full">
       {/* 顶部标题栏 */}
-      <header className="shrink-0 h-16 border-b border-border/50 bg-card/30 backdrop-blur-sm px-6 flex items-center">
+      <header className="shrink-0 h-14 md:h-16 border-b border-border/50 bg-card/30 backdrop-blur-sm px-4 md:px-6 flex items-center">
         <div>
-          <h1 className="text-xl font-semibold text-foreground">工具</h1>
-          <p className="text-sm text-muted-foreground">实用工具集合</p>
+          <h1 className="text-lg md:text-xl font-semibold text-foreground">工具</h1>
+          <p className="text-sm text-muted-foreground hidden sm:block">实用工具集合</p>
         </div>
       </header>
 

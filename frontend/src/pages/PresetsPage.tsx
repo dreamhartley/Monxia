@@ -203,6 +203,26 @@ export default function PresetsPage() {
   const [draggedNaiIndex, setDraggedNaiIndex] = useState<number | null>(null)
   const [dragOverNaiIndex, setDragOverNaiIndex] = useState<number | null>(null)
 
+  // 触摸拖拽状态
+  const touchStateRef = useRef<{
+    type: 'noob' | 'nai'
+    index: number
+    startX: number
+    startY: number
+    isDragging: boolean
+  } | null>(null)
+  const noobContainerRef = useRef<HTMLDivElement>(null)
+  const naiContainerRef = useRef<HTMLDivElement>(null)
+
+  // 拖拽幽灵元素状态
+  const [dragGhost, setDragGhost] = useState<{
+    visible: boolean
+    x: number
+    y: number
+    content: string
+    weight: number
+  } | null>(null)
+
   // 双击检测（更严格的双击判断）
   const lastClickRef = useRef<{ type: 'noob' | 'nai'; index: number; time: number } | null>(null)
   const DOUBLE_CLICK_THRESHOLD = 250 // 双击间隔阈值（毫秒）
@@ -440,13 +460,41 @@ export default function PresetsPage() {
   }
 
   // NOOB 标签拖拽处理
-  const handleNoobDragStart = (index: number) => {
+  const handleNoobDragStart = (e: React.DragEvent, index: number) => {
     setDraggedNoobIndex(index)
+    e.dataTransfer.effectAllowed = 'move'
+
+    // 隐藏原生拖拽预览
+    const emptyImg = new Image()
+    emptyImg.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+    e.dataTransfer.setDragImage(emptyImg, 0, 0)
+
+    // 创建幽灵元素
+    const tag = noobTags[index]
+    if (tag) {
+      setDragGhost({
+        visible: true,
+        x: e.clientX,
+        y: e.clientY,
+        content: tag.name,
+        weight: tag.weight,
+      })
+    }
+  }
+
+  const handleNoobDrag = (e: React.DragEvent) => {
+    if (e.clientX !== 0 || e.clientY !== 0) {
+      setDragGhost(prev => prev ? {
+        ...prev,
+        x: e.clientX,
+        y: e.clientY,
+      } : null)
+    }
   }
 
   const handleNoobDragOver = (e: React.DragEvent, index: number) => {
     e.preventDefault()
-    if (draggedNoobIndex !== null && draggedNoobIndex !== index) {
+    if (draggedNoobIndex !== null) {
       setDragOverNoobIndex(index)
     }
   }
@@ -454,6 +502,7 @@ export default function PresetsPage() {
   const handleNoobDragEnd = () => {
     setDraggedNoobIndex(null)
     setDragOverNoobIndex(null)
+    setDragGhost(null)
   }
 
   const handleNoobDrop = (e: React.DragEvent, dropIndex: number) => {
@@ -480,13 +529,41 @@ export default function PresetsPage() {
   }
 
   // NAI 标签拖拽处理
-  const handleNaiDragStart = (index: number) => {
+  const handleNaiDragStart = (e: React.DragEvent, index: number) => {
     setDraggedNaiIndex(index)
+    e.dataTransfer.effectAllowed = 'move'
+
+    // 隐藏原生拖拽预览
+    const emptyImg = new Image()
+    emptyImg.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+    e.dataTransfer.setDragImage(emptyImg, 0, 0)
+
+    // 创建幽灵元素
+    const tag = naiTags[index]
+    if (tag) {
+      setDragGhost({
+        visible: true,
+        x: e.clientX,
+        y: e.clientY,
+        content: tag.name,
+        weight: tag.weight,
+      })
+    }
+  }
+
+  const handleNaiDrag = (e: React.DragEvent) => {
+    if (e.clientX !== 0 || e.clientY !== 0) {
+      setDragGhost(prev => prev ? {
+        ...prev,
+        x: e.clientX,
+        y: e.clientY,
+      } : null)
+    }
   }
 
   const handleNaiDragOver = (e: React.DragEvent, index: number) => {
     e.preventDefault()
-    if (draggedNaiIndex !== null && draggedNaiIndex !== index) {
+    if (draggedNaiIndex !== null) {
       setDragOverNaiIndex(index)
     }
   }
@@ -494,6 +571,7 @@ export default function PresetsPage() {
   const handleNaiDragEnd = () => {
     setDraggedNaiIndex(null)
     setDragOverNaiIndex(null)
+    setDragGhost(null)
   }
 
   const handleNaiDrop = (e: React.DragEvent, dropIndex: number) => {
@@ -518,6 +596,172 @@ export default function PresetsPage() {
     }
     handleNaiDragEnd()
   }
+
+  // 触摸拖拽处理
+  const handleTouchStart = (type: 'noob' | 'nai', index: number, e: React.TouchEvent) => {
+    const touch = e.touches[0]
+    touchStateRef.current = {
+      type,
+      index,
+      startX: touch.clientX,
+      startY: touch.clientY,
+      isDragging: false,
+    }
+  }
+
+  // 使用 useEffect 添加非 passive 的触摸事件监听器
+  useEffect(() => {
+    if (!isAddDialogOpen) return
+
+    // 延迟获取容器，确保 DOM 已渲染
+    const timeoutId = setTimeout(() => {
+      const noobContainer = noobContainerRef.current
+      const naiContainer = naiContainerRef.current
+
+      const handleTouchMoveNative = (e: TouchEvent) => {
+        if (!touchStateRef.current) return
+
+        const touch = e.touches[0]
+        const { startX, startY, type, index } = touchStateRef.current
+        const deltaX = Math.abs(touch.clientX - startX)
+        const deltaY = Math.abs(touch.clientY - startY)
+
+        // 移动超过阈值才开始拖拽
+        if (!touchStateRef.current.isDragging && (deltaX > 10 || deltaY > 10)) {
+          touchStateRef.current.isDragging = true
+          if (type === 'noob') {
+            setDraggedNoobIndex(index)
+            // 创建幽灵元素
+            const tag = noobTags[index]
+            if (tag) {
+              setDragGhost({
+                visible: true,
+                x: touch.clientX,
+                y: touch.clientY,
+                content: tag.name,
+                weight: tag.weight,
+              })
+            }
+          } else {
+            setDraggedNaiIndex(index)
+            // 创建幽灵元素
+            const tag = naiTags[index]
+            if (tag) {
+              setDragGhost({
+                visible: true,
+                x: touch.clientX,
+                y: touch.clientY,
+                content: tag.name,
+                weight: tag.weight,
+              })
+            }
+          }
+        }
+
+        if (touchStateRef.current.isDragging) {
+          if (e.cancelable) {
+            e.preventDefault() // 防止滚动
+          }
+
+          // 更新幽灵元素位置
+          setDragGhost(prev => prev ? {
+            ...prev,
+            x: touch.clientX,
+            y: touch.clientY,
+          } : null)
+
+          // 找到触摸点下的元素
+          const container = type === 'noob' ? noobContainer : naiContainer
+          if (!container) return
+
+          const tags = container.querySelectorAll('[data-tag-index]')
+          for (const tag of tags) {
+            const rect = tag.getBoundingClientRect()
+            if (
+              touch.clientX >= rect.left &&
+              touch.clientX <= rect.right &&
+              touch.clientY >= rect.top &&
+              touch.clientY <= rect.bottom
+            ) {
+              const targetIndex = parseInt(tag.getAttribute('data-tag-index') || '-1', 10)
+              if (targetIndex !== -1) {
+                if (type === 'noob') {
+                  setDragOverNoobIndex(targetIndex)
+                } else {
+                  setDragOverNaiIndex(targetIndex)
+                }
+              }
+              break
+            }
+          }
+        }
+      }
+
+      const handleTouchEndNative = () => {
+        if (!touchStateRef.current) return
+
+        const { type, index, isDragging } = touchStateRef.current
+
+        if (isDragging) {
+          if (type === 'noob') {
+            setNoobTags(prev => {
+              const overIndex = dragOverNoobIndex
+              if (overIndex === null || overIndex === index) return prev
+              const newTags = [...prev]
+              const [draggedTag] = newTags.splice(index, 1)
+              newTags.splice(overIndex, 0, draggedTag)
+              return newTags
+            })
+            if (selectedNoobIndex === index && dragOverNoobIndex !== null) {
+              setSelectedNoobIndex(dragOverNoobIndex)
+            }
+          } else if (type === 'nai') {
+            setNaiTags(prev => {
+              const overIndex = dragOverNaiIndex
+              if (overIndex === null || overIndex === index) return prev
+              const newTags = [...prev]
+              const [draggedTag] = newTags.splice(index, 1)
+              newTags.splice(overIndex, 0, draggedTag)
+              return newTags
+            })
+            if (selectedNaiIndex === index && dragOverNaiIndex !== null) {
+              setSelectedNaiIndex(dragOverNaiIndex)
+            }
+          }
+        }
+
+        // 清理状态
+        setDraggedNoobIndex(null)
+        setDragOverNoobIndex(null)
+        setDraggedNaiIndex(null)
+        setDragOverNaiIndex(null)
+        setDragGhost(null) // 隐藏幽灵元素
+        touchStateRef.current = null
+      }
+
+      // 添加非 passive 的事件监听器
+      noobContainer?.addEventListener('touchmove', handleTouchMoveNative, { passive: false })
+      noobContainer?.addEventListener('touchend', handleTouchEndNative)
+      naiContainer?.addEventListener('touchmove', handleTouchMoveNative, { passive: false })
+      naiContainer?.addEventListener('touchend', handleTouchEndNative)
+
+      // 存储清理函数
+      ;(noobContainerRef as any)._cleanup = () => {
+        noobContainer?.removeEventListener('touchmove', handleTouchMoveNative)
+        noobContainer?.removeEventListener('touchend', handleTouchEndNative)
+        naiContainer?.removeEventListener('touchmove', handleTouchMoveNative)
+        naiContainer?.removeEventListener('touchend', handleTouchEndNative)
+      }
+    }, 100)
+
+    return () => {
+      clearTimeout(timeoutId)
+      if ((noobContainerRef as any)._cleanup) {
+        (noobContainerRef as any)._cleanup()
+        ;(noobContainerRef as any)._cleanup = null
+      }
+    }
+  }, [isAddDialogOpen, dragOverNoobIndex, dragOverNaiIndex, selectedNoobIndex, selectedNaiIndex, noobTags, naiTags])
 
   // 格式转换函数
   const convertFormats = () => {
@@ -617,10 +861,10 @@ export default function PresetsPage() {
   return (
     <div className="flex-1 flex flex-col h-full">
       {/* 顶部标题栏 */}
-      <header className="shrink-0 h-16 border-b border-border/50 bg-card/30 backdrop-blur-sm px-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold text-foreground">画师串</h1>
-          <p className="text-sm text-muted-foreground">管理常用的画师组合预设</p>
+      <header className="shrink-0 h-14 md:h-16 border-b border-border/50 bg-card/30 backdrop-blur-sm px-4 md:px-6 flex items-center justify-between">
+        <div className="min-w-0">
+          <h1 className="text-lg md:text-xl font-semibold text-foreground">画师串</h1>
+          <p className="text-sm text-muted-foreground hidden sm:block">管理常用的画师组合预设</p>
         </div>
         <Button
           onClick={() => {
@@ -628,15 +872,16 @@ export default function PresetsPage() {
             loadDraft() // 恢复草稿
             setIsAddDialogOpen(true)
           }}
-          className="gap-2"
+          className="gap-2 shrink-0"
         >
           <Plus className="h-4 w-4" />
-          创建画师串
+          <span className="hidden sm:inline">创建画师串</span>
+          <span className="sm:hidden">创建</span>
         </Button>
       </header>
 
       {/* 画师串列表 */}
-      <ScrollArea className="flex-1 p-6">
+      <ScrollArea className="flex-1 p-4 md:p-6">
         {loading ? (
           <div className="flex items-center justify-center h-64">
             <Loader2 className="h-8 w-8 animate-spin text-primary" />
@@ -648,7 +893,7 @@ export default function PresetsPage() {
             <p className="text-sm">创建画师串来快速复用常用的画师组合</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 max-w-6xl">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 max-w-6xl pb-6">
             {presets.map((preset) => (
                 <Card
                   key={preset.id}
@@ -769,7 +1014,8 @@ export default function PresetsPage() {
                 </div>
               </div>
               <div
-                className="flex flex-wrap content-start gap-1.5 p-2 min-h-[70px] border rounded-md bg-background cursor-text"
+                ref={noobContainerRef}
+                className="flex flex-wrap content-start gap-1.5 p-2 min-h-[70px] border rounded-md bg-background cursor-text touch-none"
                 onClick={(e) => {
                   // 点击空白区域时聚焦输入框
                   const input = e.currentTarget.querySelector('input')
@@ -779,20 +1025,22 @@ export default function PresetsPage() {
                 {noobTags.map((tag, index) => (
                   <div
                     key={index}
+                    data-tag-index={index}
                     draggable
-                    onDragStart={() => handleNoobDragStart(index)}
+                    onDragStart={(e) => handleNoobDragStart(e, index)}
+                    onDrag={handleNoobDrag}
                     onDragOver={(e) => handleNoobDragOver(e, index)}
                     onDragEnd={handleNoobDragEnd}
                     onDrop={(e) => handleNoobDrop(e, index)}
                     onClick={(e) => handleTagClick('noob', index, e)}
-                    className={`inline-flex items-center h-6 px-2 rounded text-sm cursor-pointer transition-all ${
+                    onTouchStart={(e) => handleTouchStart('noob', index, e)}
+                    className={`inline-flex items-center h-6 px-2 rounded text-sm cursor-pointer transition-all select-none ${
                       selectedNoobIndex === index
                         ? 'bg-primary text-primary-foreground'
                         : 'bg-muted hover:bg-muted/80'
                     } ${draggedNoobIndex === index ? 'opacity-50' : ''} ${
                       dragOverNoobIndex === index ? 'ring-2 ring-primary ring-offset-1' : ''
                     }`}
-                    title="单击选中，快速双击删除，拖拽移动"
                   >
                     <span>{tag.name}</span>
                     {tag.weight !== 1.0 && (
@@ -805,7 +1053,7 @@ export default function PresetsPage() {
                   value={noobInput}
                   onChange={(e) => setNoobInput(e.target.value)}
                   onKeyDown={handleNoobKeyDown}
-                  className="flex-1 min-w-[120px] bg-transparent border-0 outline-none text-sm h-6"
+                  className="flex-1 min-w-[60px] bg-transparent border-0 outline-none text-sm h-6"
                 />
               </div>
             </div>
@@ -859,7 +1107,8 @@ export default function PresetsPage() {
                 </div>
               </div>
               <div
-                className="flex flex-wrap content-start gap-1.5 p-2 min-h-[70px] border rounded-md bg-background cursor-text"
+                ref={naiContainerRef}
+                className="flex flex-wrap content-start gap-1.5 p-2 min-h-[70px] border rounded-md bg-background cursor-text touch-none"
                 onClick={(e) => {
                   // 点击空白区域时聚焦输入框
                   const input = e.currentTarget.querySelector('input')
@@ -869,20 +1118,22 @@ export default function PresetsPage() {
                 {naiTags.map((tag, index) => (
                   <div
                     key={index}
+                    data-tag-index={index}
                     draggable
-                    onDragStart={() => handleNaiDragStart(index)}
+                    onDragStart={(e) => handleNaiDragStart(e, index)}
+                    onDrag={handleNaiDrag}
                     onDragOver={(e) => handleNaiDragOver(e, index)}
                     onDragEnd={handleNaiDragEnd}
                     onDrop={(e) => handleNaiDrop(e, index)}
                     onClick={(e) => handleTagClick('nai', index, e)}
-                    className={`inline-flex items-center h-6 px-2 rounded text-sm cursor-pointer transition-all ${
+                    onTouchStart={(e) => handleTouchStart('nai', index, e)}
+                    className={`inline-flex items-center h-6 px-2 rounded text-sm cursor-pointer transition-all select-none ${
                       selectedNaiIndex === index
                         ? 'bg-primary text-primary-foreground'
                         : 'bg-muted hover:bg-muted/80'
                     } ${draggedNaiIndex === index ? 'opacity-50' : ''} ${
                       dragOverNaiIndex === index ? 'ring-2 ring-primary ring-offset-1' : ''
                     }`}
-                    title="单击选中，快速双击删除，拖拽移动"
                   >
                     <span>{tag.name}</span>
                     {tag.weight !== 1.0 && (
@@ -895,35 +1146,35 @@ export default function PresetsPage() {
                   value={naiInput}
                   onChange={(e) => setNaiInput(e.target.value)}
                   onKeyDown={handleNaiKeyDown}
-                  className="flex-1 min-w-[120px] bg-transparent border-0 outline-none text-sm h-6"
+                  className="flex-1 min-w-[60px] bg-transparent border-0 outline-none text-sm h-6"
                 />
               </div>
+              <p className="text-xs text-muted-foreground mt-3">单击选中，双击删除，拖拽移动</p>
             </div>
           </div>
-          <DialogFooter className="mt-2 flex justify-between items-center w-full">
-             <div className="flex-1 flex gap-2">
-              {formData.id ? (
-                <Button
-                  variant="destructive"
-                  onClick={() => {
-                     setCurrentPreset({ id: formData.id } as Preset) // 简单的mock对象用于删除确认
-                     setIsDeleteDialogOpen(true)
-                  }}
-                >
-                  <Trash2 className="h-4 w-4 mr-2" />
-                  删除
-                </Button>
-              ) : (
-                <Button
-                  variant="outline"
-                  onClick={clearDraft}
-                  className="gap-2"
-                >
-                  <RotateCcw className="h-4 w-4" />
-                  清空
-                </Button>
-              )}
-            </div>
+          <DialogFooter className="mt-2 flex !flex-row !justify-between items-center w-full gap-2">
+            {formData.id ? (
+              <Button
+                variant="destructive"
+                onClick={() => {
+                   setCurrentPreset({ id: formData.id } as Preset)
+                   setIsDeleteDialogOpen(true)
+                }}
+                className="shrink-0"
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                删除
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                onClick={clearDraft}
+                className="gap-2 shrink-0"
+              >
+                <RotateCcw className="h-4 w-4" />
+                清空
+              </Button>
+            )}
             <div className="flex gap-2">
               <Button
                 variant="outline"
@@ -972,6 +1223,23 @@ export default function PresetsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* 触摸拖拽幽灵元素 */}
+      {dragGhost && dragGhost.visible && (
+        <div
+          className="fixed pointer-events-none z-[9999] inline-flex items-center h-6 px-2 rounded text-sm bg-primary text-primary-foreground shadow-lg opacity-90 transition-transform duration-75"
+          style={{
+            left: dragGhost.x,
+            top: dragGhost.y,
+            transform: 'translate(-50%, -50%) scale(1.05)',
+          }}
+        >
+          <span>{dragGhost.content}</span>
+          {dragGhost.weight !== 1.0 && (
+            <span className="text-xs opacity-70 ml-0.5">:{dragGhost.weight.toFixed(1)}</span>
+          )}
+        </div>
+      )}
     </div>
   )
 }
