@@ -35,7 +35,7 @@ from utils import (
 )
 
 # 前端静态文件目录
-FRONTEND_DIST_DIR = Path(__file__).parent.parent / 'frontend' / 'dist'
+FRONTEND_DIST_DIR = Path(__file__).parent / 'dist'
 
 app = Flask(__name__, static_folder=str(FRONTEND_DIST_DIR), static_url_path='')
 

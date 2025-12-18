@@ -59,8 +59,8 @@ RUN playwright install chromium
 # 复制后端源码
 COPY backend/ ./backend/
 
-# 从阶段1复制前端构建产物
-COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
+# 从阶段1复制前端构建产物到 backend/dist
+COPY --from=frontend-builder /app/frontend/dist ./backend/dist
 
 # 创建数据目录（用于存储数据库和图片）
 # 目录结构:
@@ -87,4 +87,4 @@ VOLUME ["/app/data"]
 WORKDIR /app/backend
 
 # 启动命令
-CMD ["python", "-m", "flask", "run", "--host=0.0.0.0", "--port=5000"]
+CMD ["python", "run.py"]

@@ -29,6 +29,9 @@ artist_images/*
 flask_session/
 instance/
 
+# 前端构建产物
+dist/
+
 # OS
 .DS_Store
 Thumbs.db
