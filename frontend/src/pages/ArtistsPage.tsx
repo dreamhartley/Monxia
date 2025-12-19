@@ -433,38 +433,69 @@ export default function ArtistsPage() {
     setSimpleAddName('')
   }
 
-  // 清洗画师输入，去除权重信息，返回纯净的画师名称
-  const cleanArtistInput = (input: string): string => {
-    let name = input.trim()
-    if (!name) return ''
-
-    // 检测并移除 NOOB 权重格式: (name:weight)
-    const noobWeightMatch = name.match(/^\((.+?):(\d+\.?\d*)\)$/)
-    if (noobWeightMatch) {
-      name = noobWeightMatch[1]
-    }
-
-    // 检测并移除 NAI 权重格式: weight::name::
-    const naiWeightMatch = name.match(/^(\d+\.?\d*)::(.+?)::$/)
-    if (naiWeightMatch) {
-      name = naiWeightMatch[2]
-    }
+  // 清洗单个画师名称，去除权重信息和格式前缀，返回纯净的画师名称
+  const cleanSingleArtistName = (name: string): string => {
+    let cleaned = name.trim()
+    if (!cleaned) return ''
 
     // 去除 artist: 前缀
-    if (name.startsWith('artist:')) {
-      name = name.slice(7)
+    if (cleaned.startsWith('artist:')) {
+      cleaned = cleaned.slice(7)
     }
 
     // 去除转义括号 \( \) -> ( )
-    name = name.replace(/\\([()])/g, '$1')
+    cleaned = cleaned.replace(/\\([()])/g, '$1')
 
     // 将下划线替换为空格
-    name = name.replace(/_/g, ' ')
+    cleaned = cleaned.replace(/_/g, ' ')
 
     // 去除多余空格
-    name = name.replace(/\s+/g, ' ').trim()
+    cleaned = cleaned.replace(/\s+/g, ' ').trim()
 
-    return name
+    return cleaned
+  }
+
+  // 展开画师输入，支持合并权重格式的拆分，返回画师名称数组
+  const expandArtistInput = (input: string): string[] => {
+    const trimmed = input.trim()
+    if (!trimmed) return []
+
+    // 检查 NAI 合并权重格式: weight::artist:name1,artist:name2::
+    const naiMergedMatch = trimmed.match(/^(\d+\.?\d*)::(.+)::$/)
+    if (naiMergedMatch) {
+      const content = naiMergedMatch[2]
+      // 按逗号拆分多个画师
+      const artists = content.split(/[,，]/).map(s => s.trim()).filter(Boolean)
+      return artists.map(cleanSingleArtistName).filter(Boolean)
+    }
+
+    // 检查 NOOB 合并权重格式: (name1,name2:weight)
+    const noobMergedMatch = trimmed.match(/^\((.+):(\d+\.?\d*)\)$/)
+    if (noobMergedMatch) {
+      const content = noobMergedMatch[1]
+      // 检查内容中是否包含逗号（合并格式）
+      if (content.includes(',') || content.includes('，')) {
+        const artists = content.split(/[,，]/).map(s => s.trim()).filter(Boolean)
+        return artists.map(cleanSingleArtistName).filter(Boolean)
+      }
+      // 单个画师带权重
+      return [cleanSingleArtistName(content)].filter(Boolean)
+    }
+
+    // 检查单个 NAI 权重格式: weight::name::
+    const naiWeightMatch = trimmed.match(/^(\d+\.?\d*)::(.+?)::$/)
+    if (naiWeightMatch) {
+      return [cleanSingleArtistName(naiWeightMatch[2])].filter(Boolean)
+    }
+
+    // 普通格式，直接清洗
+    return [cleanSingleArtistName(trimmed)].filter(Boolean)
+  }
+
+  // 清洗画师输入，去除权重信息，返回纯净的画师名称（兼容旧逻辑）
+  const cleanArtistInput = (input: string): string => {
+    const expanded = expandArtistInput(input)
+    return expanded.length > 0 ? expanded[0] : ''
   }
 
   // 批量添加画师
@@ -481,14 +512,32 @@ export default function ArtistsPage() {
       return
     }
 
-    // 解析输入，支持逗号和换行分隔
-    const rawNames = batchAddInput
-      .split(/[,，\n]/)
+    // 解析输入，先按换行分隔（保留合并格式），再处理每一行
+    const lines = batchAddInput
+      .split(/\n/)
       .map(s => s.trim())
       .filter(Boolean)
 
-    // 清洗格式并去重
-    const cleanedNames = [...new Set(rawNames.map(cleanArtistInput).filter(Boolean))]
+    // 展开所有输入（支持合并权重格式的拆分）
+    const allNames: string[] = []
+    for (const line of lines) {
+      // 检查是否是合并权重格式
+      const isMergedFormat = /^(\d+\.?\d*)::(.+)::$/.test(line) || /^\((.+):(\d+\.?\d*)\)$/.test(line)
+
+      if (isMergedFormat) {
+        // 合并格式，使用 expandArtistInput 展开
+        allNames.push(...expandArtistInput(line))
+      } else {
+        // 非合并格式，按逗号分隔后逐个处理
+        const parts = line.split(/[,，]/).map(s => s.trim()).filter(Boolean)
+        for (const part of parts) {
+          allNames.push(...expandArtistInput(part))
+        }
+      }
+    }
+
+    // 去重
+    const cleanedNames = [...new Set(allNames.filter(Boolean))]
 
     if (cleanedNames.length === 0) {
       alert('没有有效的画师名称')

@@ -351,8 +351,45 @@ export default function PresetsPage() {
   const handleNoobKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && noobInput.trim()) {
       e.preventDefault()
-      const inputs = noobInput.split(/[,，]/).map(s => s.trim()).filter(Boolean)
+      const rawInput = noobInput.trim()
       const newTags: ArtistTag[] = []
+
+      // 检查 NAI 合并权重格式 weight::artist:name1,artist:name2::
+      const naiMergedMatch = rawInput.match(/^(\d+\.?\d*)::(.+)::$/)
+      if (naiMergedMatch) {
+        const weight = parseFloat(naiMergedMatch[1])
+        const content = naiMergedMatch[2]
+        // 按逗号拆分多个画师
+        const artists = content.split(/[,，]/).map(s => s.trim()).filter(Boolean)
+        for (const artist of artists) {
+          const formattedName = formatNoob(extractFromNai(artist))
+          newTags.push({ name: formattedName, weight })
+        }
+        setNoobTags([...noobTags, ...newTags])
+        setNoobInput('')
+        return
+      }
+
+      // 检查 NOOB 合并权重格式 (name1,name2:weight)
+      const noobMergedMatch = rawInput.match(/^\((.+):(\d+\.?\d*)\)$/)
+      if (noobMergedMatch) {
+        const content = noobMergedMatch[1]
+        const weight = parseFloat(noobMergedMatch[2])
+        // 检查内容中是否包含逗号（合并格式）
+        if (content.includes(',') || content.includes('，')) {
+          const artists = content.split(/[,，]/).map(s => s.trim()).filter(Boolean)
+          for (const artist of artists) {
+            const formattedName = formatNoob(artist)
+            newTags.push({ name: formattedName, weight })
+          }
+          setNoobTags([...noobTags, ...newTags])
+          setNoobInput('')
+          return
+        }
+      }
+
+      // 原有逻辑：按逗号分隔处理多个输入
+      const inputs = rawInput.split(/[,，]/).map(s => s.trim()).filter(Boolean)
 
       for (const input of inputs) {
         const format = detectFormat(input)
@@ -398,8 +435,45 @@ export default function PresetsPage() {
   const handleNaiKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && naiInput.trim()) {
       e.preventDefault()
-      const inputs = naiInput.split(/[,，]/).map(s => s.trim()).filter(Boolean)
+      const rawInput = naiInput.trim()
       const newTags: ArtistTag[] = []
+
+      // 检查 NAI 合并权重格式 weight::artist:name1,artist:name2::
+      const naiMergedMatch = rawInput.match(/^(\d+\.?\d*)::(.+)::$/)
+      if (naiMergedMatch) {
+        const weight = parseFloat(naiMergedMatch[1])
+        const content = naiMergedMatch[2]
+        // 按逗号拆分多个画师
+        const artists = content.split(/[,，]/).map(s => s.trim()).filter(Boolean)
+        for (const artist of artists) {
+          const formattedName = formatNai(extractFromNai(artist))
+          newTags.push({ name: formattedName, weight })
+        }
+        setNaiTags([...naiTags, ...newTags])
+        setNaiInput('')
+        return
+      }
+
+      // 检查 NOOB 合并权重格式 (name1,name2:weight)
+      const noobMergedMatch = rawInput.match(/^\((.+):(\d+\.?\d*)\)$/)
+      if (noobMergedMatch) {
+        const content = noobMergedMatch[1]
+        const weight = parseFloat(noobMergedMatch[2])
+        // 检查内容中是否包含逗号（合并格式）
+        if (content.includes(',') || content.includes('，')) {
+          const artists = content.split(/[,，]/).map(s => s.trim()).filter(Boolean)
+          for (const artist of artists) {
+            const formattedName = formatNai(artist)
+            newTags.push({ name: formattedName, weight })
+          }
+          setNaiTags([...naiTags, ...newTags])
+          setNaiInput('')
+          return
+        }
+      }
+
+      // 原有逻辑：按逗号分隔处理多个输入
+      const inputs = rawInput.split(/[,，]/).map(s => s.trim()).filter(Boolean)
 
       for (const input of inputs) {
         const format = detectFormat(input)
