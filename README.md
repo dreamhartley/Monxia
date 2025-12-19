@@ -43,6 +43,8 @@
 
 ## 🚀 快速开始
 
+> **推荐**：本地用户可直接下载 [Release](https://github.com/dreamhartley/Monxia/releases) 中的免构建版本，解压后运行 `start.bat`或`start.sh` 即可。
+
 ### 默认账号
 
 | 用户名 | 密码 | 说明 |
@@ -69,8 +71,6 @@ docker run -d -p 5000:5000 \
 ### 方式二：一键启动脚本
 
 #### Windows
-
-> **推荐**：Windows 用户可直接下载 [Release](https://github.com/dreamhartley/Monxia/releases) 中的免构建版本，解压后运行 `start.bat` 即可。
 
 双击运行项目根目录下的 `start.bat`。
 
