@@ -526,6 +526,7 @@ export default function ArtistsPage() {
   }
 
   // 展开画师输入，支持合并权重格式的拆分，返回画师名称数组
+  // 与 PresetsPage 中的高级匹配逻辑保持一致
   const expandArtistInput = (input: string): string[] => {
     // 去除末尾的逗号
     const trimmed = input.trim().replace(/[,，]+$/, '').trim()
@@ -544,29 +545,41 @@ export default function ArtistsPage() {
         const content = match[2]
 
         // 检查是否是合并格式（内容包含逗号分隔的多个画师）
+        // 与 PresetsPage 保持一致，使用简单的逗号分隔
         if (content.includes(',') || content.includes('，')) {
-          // 合并格式，拆分成多个画师
           const artists = content.split(/[,，]/).map(s => s.trim()).filter(Boolean)
-          result.push(...artists.map(cleanSingleArtistName).filter(Boolean))
+          for (const artist of artists) {
+            const cleaned = cleanSingleArtistName(artist)
+            if (cleaned) result.push(cleaned)
+          }
         } else {
-          // 单个标签
-          result.push(cleanSingleArtistName(content))
+          const cleaned = cleanSingleArtistName(content)
+          if (cleaned) result.push(cleaned)
         }
       }
 
       return result.filter(Boolean)
     }
 
-    // 检查 NOOB 格式: (content:weight)，支持嵌套
-    const noobMergedMatch = trimmed.match(/^\((.+):(\d+\.?\d*)\)$/)
-    if (noobMergedMatch) {
-      const content = noobMergedMatch[1]
-      // 使用递归解析处理嵌套格式
-      return parseNoobContentForBatch(content)
+    // 使用智能分隔来分隔输入（考虑括号嵌套）- 用于 NOOB 格式
+    const parts = splitNoobContentForBatch(trimmed)
+
+    for (const part of parts) {
+      // 检查 NOOB 格式: (content:weight)
+      const noobMatch = part.match(/^\((.+):(\d+\.?\d*)\)$/)
+      if (noobMatch) {
+        const content = noobMatch[1]
+        // 使用递归解析处理嵌套格式
+        const nestedNames = parseNoobContentForBatch(content)
+        result.push(...nestedNames)
+      } else {
+        // 普通名称
+        const cleaned = cleanSingleArtistName(part)
+        if (cleaned) result.push(cleaned)
+      }
     }
 
-    // 普通格式，直接清洗
-    return [cleanSingleArtistName(trimmed)].filter(Boolean)
+    return result.filter(Boolean)
   }
 
   // 清洗画师输入，去除权重信息，返回纯净的画师名称（兼容旧逻辑）
@@ -589,28 +602,16 @@ export default function ArtistsPage() {
       return
     }
 
-    // 解析输入，先按换行分隔（保留合并格式），再处理每一行
+    // 解析输入，先按换行分隔，再处理每一行
     const lines = batchAddInput
       .split(/\n/)
       .map(s => s.trim())
       .filter(Boolean)
 
-    // 展开所有输入（支持合并权重格式的拆分）
+    // 展开所有输入（支持各种权重格式的拆分，使用智能分隔处理嵌套括号）
     const allNames: string[] = []
     for (const line of lines) {
-      // 检查是否是合并权重格式
-      const isMergedFormat = /^(\d+\.?\d*)::(.+)::$/.test(line) || /^\((.+):(\d+\.?\d*)\)$/.test(line)
-
-      if (isMergedFormat) {
-        // 合并格式，使用 expandArtistInput 展开
-        allNames.push(...expandArtistInput(line))
-      } else {
-        // 非合并格式，按逗号分隔后逐个处理
-        const parts = line.split(/[,，]/).map(s => s.trim()).filter(Boolean)
-        for (const part of parts) {
-          allNames.push(...expandArtistInput(part))
-        }
-      }
+      allNames.push(...expandArtistInput(line))
     }
 
     // 去重
