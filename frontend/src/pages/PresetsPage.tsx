@@ -463,16 +463,48 @@ export default function PresetsPage() {
         return
       }
 
-      // 检查 NOOB 格式 (content:weight)，支持嵌套
-      const noobMergedMatch = rawInput.match(/^\((.+):(\d+\.?\d*)\)$/)
-      if (noobMergedMatch) {
-        const content = noobMergedMatch[1]
-        const weight = parseFloat(noobMergedMatch[2])
-        // 使用递归解析处理嵌套格式
-        const parsed = parseNoobContentRecursive(content, weight, formatNoob)
-        for (const item of parsed) {
-          newTags.push({ name: item.name, weight: item.weight })
+      // 使用智能分隔来分隔输入（考虑括号嵌套）
+      const parts = splitNoobContent(rawInput)
+
+      // 检查是否有 NOOB 格式标签
+      let hasNoobTags = false
+      for (const part of parts) {
+        const noobMatch = part.match(/^\((.+):(\d+\.?\d*)\)$/)
+        if (noobMatch) {
+          hasNoobTags = true
+          const content = noobMatch[1]
+          const weight = parseFloat(noobMatch[2])
+          // 使用递归解析处理嵌套格式
+          const parsed = parseNoobContentRecursive(content, weight, formatNoob)
+          for (const item of parsed) {
+            newTags.push({ name: item.name, weight: item.weight })
+          }
+        } else {
+          // 不是 NOOB 格式，作为普通名称处理
+          const format = detectFormat(part)
+          let nameToFormat = part
+          let weight = 1.0
+
+          // 检查 NAI 权重格式 weight::name::
+          const naiWeightMatch = part.match(/^(\d+\.?\d*)::(.+?)::$/)
+          if (naiWeightMatch) {
+            weight = parseFloat(naiWeightMatch[1])
+            nameToFormat = naiWeightMatch[2]
+          }
+
+          // 根据检测到的格式进行转换
+          let formattedName: string
+          if (format === 'nai' || naiWeightMatch) {
+            formattedName = formatNoob(extractFromNai(nameToFormat))
+          } else {
+            formattedName = formatNoob(nameToFormat)
+          }
+
+          newTags.push({ name: formattedName, weight })
         }
+      }
+
+      if (hasNoobTags || parts.length > 0) {
         setNoobTags([...noobTags, ...newTags])
         setNoobInput('')
         return
@@ -560,16 +592,48 @@ export default function PresetsPage() {
         return
       }
 
-      // 检查 NOOB 格式 (content:weight)，支持嵌套
-      const noobMergedMatch = rawInput.match(/^\((.+):(\d+\.?\d*)\)$/)
-      if (noobMergedMatch) {
-        const content = noobMergedMatch[1]
-        const weight = parseFloat(noobMergedMatch[2])
-        // 使用递归解析处理嵌套格式，转换为 NAI 格式
-        const parsed = parseNoobContentRecursive(content, weight, formatNai)
-        for (const item of parsed) {
-          newTags.push({ name: item.name, weight: item.weight })
+      // 使用智能分隔来分隔输入（考虑括号嵌套）
+      const parts = splitNoobContent(rawInput)
+
+      // 检查是否有 NOOB 格式标签
+      let hasNoobTags = false
+      for (const part of parts) {
+        const noobMatch = part.match(/^\((.+):(\d+\.?\d*)\)$/)
+        if (noobMatch) {
+          hasNoobTags = true
+          const content = noobMatch[1]
+          const weight = parseFloat(noobMatch[2])
+          // 使用递归解析处理嵌套格式，转换为 NAI 格式
+          const parsed = parseNoobContentRecursive(content, weight, formatNai)
+          for (const item of parsed) {
+            newTags.push({ name: item.name, weight: item.weight })
+          }
+        } else {
+          // 不是 NOOB 格式，作为普通名称处理
+          const format = detectFormat(part)
+          let nameToFormat = part
+          let weight = 1.0
+
+          // 检查 NAI 权重格式 weight::name::
+          const naiWeightMatch = part.match(/^(\d+\.?\d*)::(.+?)::$/)
+          if (naiWeightMatch) {
+            weight = parseFloat(naiWeightMatch[1])
+            nameToFormat = naiWeightMatch[2]
+          }
+
+          // 根据检测到的格式进行转换
+          let formattedName: string
+          if (format === 'noob' || (format === 'plain' && /\\[()]/.test(nameToFormat))) {
+            formattedName = formatNai(extractFromNoob(nameToFormat))
+          } else {
+            formattedName = formatNai(nameToFormat)
+          }
+
+          newTags.push({ name: formattedName, weight })
         }
+      }
+
+      if (hasNoobTags || parts.length > 0) {
         setNaiTags([...naiTags, ...newTags])
         setNaiInput('')
         return
