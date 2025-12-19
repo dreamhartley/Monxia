@@ -455,37 +455,114 @@ export default function ArtistsPage() {
     return cleaned
   }
 
-  // 展开画师输入，支持合并权重格式的拆分，返回画师名称数组
-  const expandArtistInput = (input: string): string[] => {
-    const trimmed = input.trim()
-    if (!trimmed) return []
+  // 智能分隔 NOOB 格式内容，考虑括号嵌套和转义
+  const splitNoobContentForBatch = (content: string): string[] => {
+    const result: string[] = []
+    let current = ''
+    let depth = 0
+    let i = 0
 
-    // 检查 NAI 合并权重格式: weight::artist:name1,artist:name2::
-    const naiMergedMatch = trimmed.match(/^(\d+\.?\d*)::(.+)::$/)
-    if (naiMergedMatch) {
-      const content = naiMergedMatch[2]
-      // 按逗号拆分多个画师
-      const artists = content.split(/[,，]/).map(s => s.trim()).filter(Boolean)
-      return artists.map(cleanSingleArtistName).filter(Boolean)
+    while (i < content.length) {
+      const char = content[i]
+
+      // 检查转义字符
+      if (char === '\\' && i + 1 < content.length) {
+        const nextChar = content[i + 1]
+        if (nextChar === '(' || nextChar === ')') {
+          // 转义括号，不影响深度
+          current += char + nextChar
+          i += 2
+          continue
+        }
+      }
+
+      if (char === '(') {
+        depth++
+        current += char
+      } else if (char === ')') {
+        depth--
+        current += char
+      } else if ((char === ',' || char === '，') && depth === 0) {
+        // 只在顶层分隔
+        if (current.trim()) {
+          result.push(current.trim())
+        }
+        current = ''
+      } else {
+        current += char
+      }
+
+      i++
     }
 
-    // 检查 NOOB 合并权重格式: (name1,name2:weight)
+    if (current.trim()) {
+      result.push(current.trim())
+    }
+
+    return result
+  }
+
+  // 递归解析 NOOB 格式内容，返回画师名称数组
+  const parseNoobContentForBatch = (content: string): string[] => {
+    const result: string[] = []
+
+    // 智能分隔，考虑括号嵌套
+    const parts = splitNoobContentForBatch(content)
+
+    for (const part of parts) {
+      // 检查是否是嵌套的 NOOB 格式 (content:weight)
+      const noobMatch = part.match(/^\((.+):(\d+\.?\d*)\)$/)
+      if (noobMatch) {
+        // 递归处理嵌套格式
+        const nestedContent = noobMatch[1]
+        result.push(...parseNoobContentForBatch(nestedContent))
+      } else {
+        // 普通名称
+        result.push(cleanSingleArtistName(part))
+      }
+    }
+
+    return result.filter(Boolean)
+  }
+
+  // 展开画师输入，支持合并权重格式的拆分，返回画师名称数组
+  const expandArtistInput = (input: string): string[] => {
+    // 去除末尾的逗号
+    const trimmed = input.trim().replace(/[,，]+$/, '').trim()
+    if (!trimmed) return []
+
+    const result: string[] = []
+
+    // 使用正则提取所有 NAI 格式标签 weight::content::
+    // content 可以包含单个冒号（如 artist:name）但不能包含双冒号
+    const naiTagPattern = /(\d+\.?\d*)::([^:]+(?::[^:]+)*)::/g
+    const matches = [...trimmed.matchAll(naiTagPattern)]
+
+    if (matches.length > 0) {
+      // 找到了 NAI 格式标签，逐个处理
+      for (const match of matches) {
+        const content = match[2]
+
+        // 检查是否是合并格式（内容包含逗号分隔的多个画师）
+        if (content.includes(',') || content.includes('，')) {
+          // 合并格式，拆分成多个画师
+          const artists = content.split(/[,，]/).map(s => s.trim()).filter(Boolean)
+          result.push(...artists.map(cleanSingleArtistName).filter(Boolean))
+        } else {
+          // 单个标签
+          result.push(cleanSingleArtistName(content))
+        }
+      }
+
+      return result.filter(Boolean)
+    }
+
+    // 检查 NOOB 格式: (content:weight)，支持嵌套
     const noobMergedMatch = trimmed.match(/^\((.+):(\d+\.?\d*)\)$/)
     if (noobMergedMatch) {
       const content = noobMergedMatch[1]
-      // 检查内容中是否包含逗号（合并格式）
-      if (content.includes(',') || content.includes('，')) {
-        const artists = content.split(/[,，]/).map(s => s.trim()).filter(Boolean)
-        return artists.map(cleanSingleArtistName).filter(Boolean)
-      }
-      // 单个画师带权重
-      return [cleanSingleArtistName(content)].filter(Boolean)
-    }
-
-    // 检查单个 NAI 权重格式: weight::name::
-    const naiWeightMatch = trimmed.match(/^(\d+\.?\d*)::(.+?)::$/)
-    if (naiWeightMatch) {
-      return [cleanSingleArtistName(naiWeightMatch[2])].filter(Boolean)
+      // 使用递归解析处理嵌套格式
+      return parseNoobContentForBatch(content)
     }
 
     // 普通格式，直接清洗

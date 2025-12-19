@@ -110,6 +110,83 @@ function detectFormat(input: string): 'nai' | 'noob' | 'plain' {
 }
 
 // -------------------------------
+// NOOB 格式嵌套解析
+// -------------------------------
+
+// 智能分隔 NOOB 格式内容，考虑括号嵌套和转义
+function splitNoobContent(content: string): string[] {
+  const result: string[] = []
+  let current = ''
+  let depth = 0
+  let i = 0
+
+  while (i < content.length) {
+    const char = content[i]
+
+    // 检查转义字符
+    if (char === '\\' && i + 1 < content.length) {
+      const nextChar = content[i + 1]
+      if (nextChar === '(' || nextChar === ')') {
+        // 转义括号，不影响深度
+        current += char + nextChar
+        i += 2
+        continue
+      }
+    }
+
+    if (char === '(') {
+      depth++
+      current += char
+    } else if (char === ')') {
+      depth--
+      current += char
+    } else if ((char === ',' || char === '，') && depth === 0) {
+      // 只在顶层分隔
+      if (current.trim()) {
+        result.push(current.trim())
+      }
+      current = ''
+    } else {
+      current += char
+    }
+
+    i++
+  }
+
+  if (current.trim()) {
+    result.push(current.trim())
+  }
+
+  return result
+}
+
+// 递归解析 NOOB 格式内容，返回 {name, weight} 数组
+function parseNoobContentRecursive(content: string, defaultWeight: number, formatFn: (name: string) => string): Array<{ name: string; weight: number }> {
+  const result: Array<{ name: string; weight: number }> = []
+
+  // 智能分隔，考虑括号嵌套
+  const parts = splitNoobContent(content)
+
+  for (const part of parts) {
+    // 检查是否是嵌套的 NOOB 格式 (content:weight)
+    // 使用非贪婪匹配找到最外层的格式
+    const noobMatch = part.match(/^\((.+):(\d+\.?\d*)\)$/)
+    if (noobMatch) {
+      // 递归处理嵌套格式
+      const nestedContent = noobMatch[1]
+      const nestedWeight = parseFloat(noobMatch[2])
+      result.push(...parseNoobContentRecursive(nestedContent, nestedWeight, formatFn))
+    } else {
+      // 普通名称，使用默认权重
+      const formattedName = formatFn(part)
+      result.push({ name: formattedName, weight: defaultWeight })
+    }
+  }
+
+  return result
+}
+
+// -------------------------------
 // 标签解析和生成
 // -------------------------------
 
@@ -351,45 +428,58 @@ export default function PresetsPage() {
   const handleNoobKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && noobInput.trim()) {
       e.preventDefault()
-      const rawInput = noobInput.trim()
+      // 去除末尾的逗号，避免破坏合并格式的匹配
+      const rawInput = noobInput.trim().replace(/[,，]+$/, '').trim()
       const newTags: ArtistTag[] = []
 
-      // 检查 NAI 合并权重格式 weight::artist:name1,artist:name2::
-      const naiMergedMatch = rawInput.match(/^(\d+\.?\d*)::(.+)::$/)
-      if (naiMergedMatch) {
-        const weight = parseFloat(naiMergedMatch[1])
-        const content = naiMergedMatch[2]
-        // 按逗号拆分多个画师
-        const artists = content.split(/[,，]/).map(s => s.trim()).filter(Boolean)
-        for (const artist of artists) {
-          const formattedName = formatNoob(extractFromNai(artist))
-          newTags.push({ name: formattedName, weight })
+      // 使用正则提取所有 NAI 格式标签 weight::content::
+      // content 可以包含单个冒号（如 artist:name）但不能包含双冒号
+      const naiTagPattern = /(\d+\.?\d*)::([^:]+(?::[^:]+)*)::/g
+      const matches = [...rawInput.matchAll(naiTagPattern)]
+
+      if (matches.length > 0) {
+        // 找到了 NAI 格式标签，逐个处理并转换为 NOOB 格式
+        for (const match of matches) {
+          const weight = parseFloat(match[1])
+          const content = match[2]
+
+          // 检查是否是合并格式（内容包含逗号分隔的多个画师）
+          if (content.includes(',') || content.includes('，')) {
+            // 合并格式，拆分成多个标签
+            const artists = content.split(/[,，]/).map(s => s.trim()).filter(Boolean)
+            for (const artist of artists) {
+              const formattedName = formatNoob(extractFromNai(artist))
+              newTags.push({ name: formattedName, weight })
+            }
+          } else {
+            // 单个标签
+            const formattedName = formatNoob(extractFromNai(content))
+            newTags.push({ name: formattedName, weight })
+          }
+        }
+
+        setNoobTags([...noobTags, ...newTags])
+        setNoobInput('')
+        return
+      }
+
+      // 检查 NOOB 格式 (content:weight)，支持嵌套
+      const noobMergedMatch = rawInput.match(/^\((.+):(\d+\.?\d*)\)$/)
+      if (noobMergedMatch) {
+        const content = noobMergedMatch[1]
+        const weight = parseFloat(noobMergedMatch[2])
+        // 使用递归解析处理嵌套格式
+        const parsed = parseNoobContentRecursive(content, weight, formatNoob)
+        for (const item of parsed) {
+          newTags.push({ name: item.name, weight: item.weight })
         }
         setNoobTags([...noobTags, ...newTags])
         setNoobInput('')
         return
       }
 
-      // 检查 NOOB 合并权重格式 (name1,name2:weight)
-      const noobMergedMatch = rawInput.match(/^\((.+):(\d+\.?\d*)\)$/)
-      if (noobMergedMatch) {
-        const content = noobMergedMatch[1]
-        const weight = parseFloat(noobMergedMatch[2])
-        // 检查内容中是否包含逗号（合并格式）
-        if (content.includes(',') || content.includes('，')) {
-          const artists = content.split(/[,，]/).map(s => s.trim()).filter(Boolean)
-          for (const artist of artists) {
-            const formattedName = formatNoob(artist)
-            newTags.push({ name: formattedName, weight })
-          }
-          setNoobTags([...noobTags, ...newTags])
-          setNoobInput('')
-          return
-        }
-      }
-
-      // 原有逻辑：按逗号分隔处理多个输入
-      const inputs = rawInput.split(/[,，]/).map(s => s.trim()).filter(Boolean)
+      // 原有逻辑：按逗号分隔处理多个输入（使用智能分隔）
+      const inputs = splitNoobContent(rawInput)
 
       for (const input of inputs) {
         const format = detectFormat(input)
@@ -435,41 +525,54 @@ export default function PresetsPage() {
   const handleNaiKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && naiInput.trim()) {
       e.preventDefault()
-      const rawInput = naiInput.trim()
+      // 去除末尾的逗号，避免破坏合并格式的匹配
+      const rawInput = naiInput.trim().replace(/[,，]+$/, '').trim()
       const newTags: ArtistTag[] = []
 
-      // 检查 NAI 合并权重格式 weight::artist:name1,artist:name2::
-      const naiMergedMatch = rawInput.match(/^(\d+\.?\d*)::(.+)::$/)
-      if (naiMergedMatch) {
-        const weight = parseFloat(naiMergedMatch[1])
-        const content = naiMergedMatch[2]
-        // 按逗号拆分多个画师
-        const artists = content.split(/[,，]/).map(s => s.trim()).filter(Boolean)
-        for (const artist of artists) {
-          const formattedName = formatNai(extractFromNai(artist))
-          newTags.push({ name: formattedName, weight })
+      // 使用正则提取所有 NAI 格式标签 weight::content::
+      // content 可以包含单个冒号（如 artist:name）但不能包含双冒号
+      const naiTagPattern = /(\d+\.?\d*)::([^:]+(?::[^:]+)*)::/g
+      const matches = [...rawInput.matchAll(naiTagPattern)]
+
+      if (matches.length > 0) {
+        // 找到了 NAI 格式标签，逐个处理
+        for (const match of matches) {
+          const weight = parseFloat(match[1])
+          const content = match[2]
+
+          // 检查是否是合并格式（内容包含逗号分隔的多个画师）
+          if (content.includes(',') || content.includes('，')) {
+            // 合并格式，拆分成多个标签
+            const artists = content.split(/[,，]/).map(s => s.trim()).filter(Boolean)
+            for (const artist of artists) {
+              const formattedName = formatNai(extractFromNai(artist))
+              newTags.push({ name: formattedName, weight })
+            }
+          } else {
+            // 单个标签
+            const formattedName = formatNai(extractFromNai(content))
+            newTags.push({ name: formattedName, weight })
+          }
         }
+
         setNaiTags([...naiTags, ...newTags])
         setNaiInput('')
         return
       }
 
-      // 检查 NOOB 合并权重格式 (name1,name2:weight)
+      // 检查 NOOB 格式 (content:weight)，支持嵌套
       const noobMergedMatch = rawInput.match(/^\((.+):(\d+\.?\d*)\)$/)
       if (noobMergedMatch) {
         const content = noobMergedMatch[1]
         const weight = parseFloat(noobMergedMatch[2])
-        // 检查内容中是否包含逗号（合并格式）
-        if (content.includes(',') || content.includes('，')) {
-          const artists = content.split(/[,，]/).map(s => s.trim()).filter(Boolean)
-          for (const artist of artists) {
-            const formattedName = formatNai(artist)
-            newTags.push({ name: formattedName, weight })
-          }
-          setNaiTags([...naiTags, ...newTags])
-          setNaiInput('')
-          return
+        // 使用递归解析处理嵌套格式，转换为 NAI 格式
+        const parsed = parseNoobContentRecursive(content, weight, formatNai)
+        for (const item of parsed) {
+          newTags.push({ name: item.name, weight: item.weight })
         }
+        setNaiTags([...naiTags, ...newTags])
+        setNaiInput('')
+        return
       }
 
       // 原有逻辑：按逗号分隔处理多个输入
