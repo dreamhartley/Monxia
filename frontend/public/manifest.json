@@ -4,8 +4,8 @@
   "description": "清新简约的画师标签整理工具",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#18181b",
+  "background_color": "#f8fafb",
+  "theme_color": "#f8fafb",
   "orientation": "portrait-primary",
   "icons": [
     {
