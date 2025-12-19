@@ -215,12 +215,21 @@ export default function CategoriesPage() {
   const handleTouchStart = (categoryId: number, e: React.TouchEvent) => {
     const touch = e.touches[0]
     const category = sortableCategories.find(c => c.id === categoryId)
+    const target = e.currentTarget as HTMLElement
 
     // 设置长按定时器
     const longPressTimer = setTimeout(() => {
       if (touchStateRef.current && !touchStateRef.current.isDragging) {
         touchStateRef.current.isDragging = true
         setDraggedCategoryId(categoryId)
+
+        // 禁用容器滚动，防止与拖拽冲突
+        const container = scrollContainerRef.current
+        if (container) {
+          container.style.overflow = 'hidden'
+          container.style.touchAction = 'none'
+        }
+
         // 创建幽灵元素
         if (category && touchStateRef.current) {
           setDragGhost({
@@ -236,6 +245,10 @@ export default function CategoriesPage() {
         }
       }
     }, 300) // 300ms 长按阈值
+
+    // 防止长按触发上下文菜单
+    target.style.webkitUserSelect = 'none'
+    target.style.userSelect = 'none'
 
     touchStateRef.current = {
       categoryId,
@@ -278,11 +291,11 @@ export default function CategoriesPage() {
           return
         }
 
-        // 如果正在拖拽
+        // 如果正在拖拽，必须阻止所有默认行为
         if (isDragging) {
-          if (e.cancelable) {
-            e.preventDefault() // 防止滚动
-          }
+          // 强制阻止默认行为，包括滚动
+          e.preventDefault()
+          e.stopPropagation()
 
           // 更新幽灵元素位置（如果不存在则创建）
           const category = sortableCategories.find(c => c.id === touchStateRef.current?.categoryId)
@@ -388,6 +401,12 @@ export default function CategoriesPage() {
           autoScrollRef.current.animationId = null
           autoScrollRef.current.direction = null
           autoScrollRef.current.speed = 0
+        }
+
+        // 恢复容器滚动
+        if (container) {
+          container.style.overflow = ''
+          container.style.touchAction = ''
         }
 
         const { categoryId, isDragging } = touchStateRef.current
@@ -811,7 +830,9 @@ export default function CategoriesPage() {
             <div
               ref={scrollContainerRef}
               className="space-y-1 max-h-[300px] overflow-y-auto"
+              style={{ touchAction: 'pan-y' }}
               onDragOver={(e) => handleDragOver(e)}
+              onContextMenu={(e) => e.preventDefault()}
             >
               {sortableCategories.map((cat) => (
                 <div
@@ -824,6 +845,7 @@ export default function CategoriesPage() {
                   onDrop={(e) => handleDrop(e, cat.id)}
                   onDragEnd={handleDragEnd}
                   onTouchStart={(e) => handleTouchStart(cat.id, e)}
+                  onContextMenu={(e) => e.preventDefault()}
                   className={`flex items-center gap-2 px-3 py-2 rounded-md cursor-grab bg-secondary/30 hover:bg-secondary/50 transition-colors select-none ${
                     draggedCategoryId === cat.id ? 'opacity-50' : ''
                   } ${dragOverCategoryId === cat.id ? 'ring-2 ring-primary ring-offset-1' : ''}`}

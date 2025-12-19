@@ -1279,6 +1279,7 @@ export default function PresetsPage() {
               <div
                 ref={noobContainerRef}
                 className="flex flex-wrap content-start gap-1.5 p-2 min-h-[70px] border rounded-md bg-background cursor-text touch-none"
+                onContextMenu={(e) => e.preventDefault()}
                 onClick={(e) => {
                   // 点击空白区域时聚焦输入框
                   const input = e.currentTarget.querySelector('input')
@@ -1372,6 +1373,7 @@ export default function PresetsPage() {
               <div
                 ref={naiContainerRef}
                 className="flex flex-wrap content-start gap-1.5 p-2 min-h-[70px] border rounded-md bg-background cursor-text touch-none"
+                onContextMenu={(e) => e.preventDefault()}
                 onClick={(e) => {
                   // 点击空白区域时聚焦输入框
                   const input = e.currentTarget.querySelector('input')
