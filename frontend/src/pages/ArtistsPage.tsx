@@ -144,6 +144,20 @@ export default function ArtistsPage() {
     viewport?.scrollTo({ top: 0, behavior: 'smooth' })
   }, [])
 
+  // 获取当前滚动位置
+  const getScrollPosition = useCallback(() => {
+    const viewport = scrollAreaRef.current?.querySelector('[data-radix-scroll-area-viewport]')
+    return viewport?.scrollTop || 0
+  }, [])
+
+  // 设置滚动位置
+  const setScrollPosition = useCallback((position: number) => {
+    const viewport = scrollAreaRef.current?.querySelector('[data-radix-scroll-area-viewport]')
+    if (viewport) {
+      viewport.scrollTop = position
+    }
+  }, [])
+
   // 监听 localStorage 变化（从 CategoriesPage 同步排序）
   useEffect(() => {
     const handleStorageChange = (e: StorageEvent) => {
@@ -396,6 +410,16 @@ export default function ArtistsPage() {
     }
   }
 
+  // 刷新数据并保持滚动位置
+  const loadDataPreservingScroll = useCallback(async () => {
+    const scrollPos = getScrollPosition()
+    await loadData()
+    // 使用 requestAnimationFrame 确保 DOM 更新后再恢复滚动位置
+    requestAnimationFrame(() => {
+      setScrollPosition(scrollPos)
+    })
+  }, [getScrollPosition, setScrollPosition])
+
   const resetForm = () => {
     setFormData({
       category_ids: [],
@@ -575,7 +599,7 @@ export default function ArtistsPage() {
     }))
 
     // 刷新数据
-    await loadData()
+    await loadDataPreservingScroll()
   }
 
   // 重置批量添加状态
@@ -686,7 +710,7 @@ export default function ArtistsPage() {
           setIsNewArtistEditing(true) // 标记为新建编辑
           setIsAddDialogOpen(false)
           setIsEditDialogOpen(true)
-          await loadData() // 刷新列表
+          await loadDataPreservingScroll() // 刷新列表
         }
       } else {
         // 如果是重复画师，询问是否直接编辑现有画师
@@ -767,7 +791,7 @@ export default function ArtistsPage() {
             const updatedArtistRes = await artistApi.getById(currentArtist.id)
             if (updatedArtistRes.success && updatedArtistRes.data) {
               setCurrentArtist(updatedArtistRes.data)
-              await loadData()
+              await loadDataPreservingScroll()
               alert('数据获取完成！')
             }
           } else {
@@ -790,7 +814,7 @@ export default function ArtistsPage() {
     try {
       const res = await artistApi.update(currentArtist.id, formData)
       if (res.success) {
-        await loadData()
+        await loadDataPreservingScroll()
         setIsEditDialogOpen(false)
         setCurrentArtist(null)
         resetForm()
@@ -813,7 +837,7 @@ export default function ArtistsPage() {
     try {
       const res = await artistApi.delete(currentArtist.id)
       if (res.success) {
-        await loadData()
+        await loadDataPreservingScroll()
         setIsDeleteDialogOpen(false)
         setCurrentArtist(null)
       } else {
@@ -832,7 +856,7 @@ export default function ArtistsPage() {
     try {
       const res = await artistApi.uploadImage(artistId, file)
       if (res.success) {
-        await loadData()
+        await loadDataPreservingScroll()
       } else {
         alert(res.error || '上传失败')
       }
@@ -891,7 +915,7 @@ export default function ArtistsPage() {
         setFormLoading(true)
         try {
           await artistApi.delete(currentArtist.id)
-          await loadData()
+          await loadDataPreservingScroll()
           setIsEditDialogOpen(false)
           setCurrentArtist(null)
           resetForm()
@@ -911,8 +935,9 @@ export default function ArtistsPage() {
     }
   }
 
-  const copyToClipboard = (text: string) => {
+  const copyToClipboard = (text: string, message?: string) => {
     navigator.clipboard.writeText(text)
+    showToast(message || '已复制到剪贴板')
   }
 
   // 添加画师到画师串草稿
@@ -1020,13 +1045,13 @@ export default function ArtistsPage() {
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         {artist.name_noob && (
-          <DropdownMenuItem onClick={() => copyToClipboard(artist.name_noob)}>
+          <DropdownMenuItem onClick={() => copyToClipboard(artist.name_noob, '已复制 NOOB 格式')}>
             <Copy className="h-4 w-4 mr-2" />
             复制 NOOB 格式
           </DropdownMenuItem>
         )}
         {artist.name_nai && (
-          <DropdownMenuItem onClick={() => copyToClipboard(artist.name_nai)}>
+          <DropdownMenuItem onClick={() => copyToClipboard(artist.name_nai, '已复制 NAI 格式')}>
             <Copy className="h-4 w-4 mr-2" />
             复制 NAI 格式
           </DropdownMenuItem>
@@ -1639,7 +1664,7 @@ export default function ArtistsPage() {
                         isOpen: false,
                       }))
                       alert(data.message || '补全完成')
-                      loadData()
+                      loadDataPreservingScroll()
                     } else if (data.type === 'error') {
                       setAutoCompleteProgress((prev) => ({
                         ...prev,
@@ -2006,18 +2031,18 @@ export default function ArtistsPage() {
 
       {/* 编辑画师对话框 */}
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
+        <DialogContent className="max-w-lg max-h-[90vh] flex flex-col">
+          <DialogHeader className="shrink-0">
             <DialogTitle>{currentArtist ? getDisplayName(currentArtist) : '编辑画师'}</DialogTitle>
             <DialogDescription>修改画师信息</DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-4">
+          <div className="space-y-3 py-2">
             {/* 分类选择 */}
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label>分类 *</Label>
-              <div className="border border-input rounded-md p-3 space-y-3">
+              <div className="border border-input rounded-md p-2 space-y-2">
                 {/* 已选分类标签 */}
-                <div className="flex flex-wrap gap-2 min-h-[32px]">
+                <div className="flex flex-wrap gap-1.5 min-h-[28px]">
                   {formData.category_ids.length > 0 ? (
                     formData.category_ids.map((id) => {
                       const cat = categories.find((c) => c.id === id)
@@ -2089,8 +2114,8 @@ export default function ArtistsPage() {
             </div>
 
             {/* 名称输入 */}
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
                 <Label htmlFor="edit_name_noob">NOOB 格式</Label>
                 <Input
                   id="edit_name_noob"
@@ -2100,7 +2125,7 @@ export default function ArtistsPage() {
                   }
                 />
               </div>
-              <div className="space-y-2">
+              <div className="space-y-1">
                 <Label htmlFor="edit_name_nai">NAI 格式</Label>
                 <Input
                   id="edit_name_nai"
@@ -2113,8 +2138,8 @@ export default function ArtistsPage() {
             </div>
 
             {/* Danbooru 链接 和 作品数量 */}
-            <div className="flex gap-4">
-              <div className="flex-1 space-y-2">
+            <div className="flex gap-3">
+              <div className="flex-1 space-y-1">
                 <Label htmlFor="edit_danbooru_link">Danbooru 链接</Label>
                 <Input
                   id="edit_danbooru_link"
@@ -2127,7 +2152,7 @@ export default function ArtistsPage() {
                   }
                 />
               </div>
-              <div className="w-24 space-y-2">
+              <div className="w-24 space-y-1">
                 <Label htmlFor="edit_post_count">作品数量</Label>
                 <Input
                   id="edit_post_count"
@@ -2145,7 +2170,7 @@ export default function ArtistsPage() {
             </div>
 
             {/* 备注 */}
-            <div className="space-y-2">
+            <div className="space-y-1">
               <Label htmlFor="edit_notes">备注</Label>
               <Textarea
                 id="edit_notes"
@@ -2158,23 +2183,18 @@ export default function ArtistsPage() {
             </div>
 
             {/* 跳过Danbooru */}
-            <div className="space-y-1">
-              <label className="flex items-center space-x-2 cursor-pointer">
-                <Checkbox
-                  checked={formData.skip_danbooru}
-                  onCheckedChange={(checked) =>
-                    setFormData((prev) => ({
-                      ...prev,
-                      skip_danbooru: checked as boolean,
-                    }))
-                  }
-                />
-                <span className="text-sm">跳过 Danbooru 获取</span>
-              </label>
-              <p className="text-xs text-muted-foreground pl-6">
-                勾选后将不会自动从 Danbooru 获取作品数据和封面图片
-              </p>
-            </div>
+            <label className="flex items-center space-x-2 cursor-pointer">
+              <Checkbox
+                checked={formData.skip_danbooru}
+                onCheckedChange={(checked) =>
+                  setFormData((prev) => ({
+                    ...prev,
+                    skip_danbooru: checked as boolean,
+                  }))
+                }
+              />
+              <span className="text-sm">跳过 Danbooru 获取</span>
+            </label>
 
             {/* 自动补全按钮 */}
             <Button
@@ -2192,7 +2212,7 @@ export default function ArtistsPage() {
               自动补全
             </Button>
           </div>
-          <DialogFooter className="flex-row gap-2 sm:gap-2">
+          <DialogFooter className="flex-row gap-2 sm:gap-2 shrink-0">
             <Button variant="outline" onClick={handleEditCancel} className="flex-1">
               取消
             </Button>

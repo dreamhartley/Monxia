@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
 import type { KeyboardEvent } from 'react'
 import {
   Plus,
@@ -173,6 +174,26 @@ function generateNaiStr(tags: ArtistTag[]): string {
 export default function PresetsPage() {
   const [presets, setPresets] = useState<Preset[]>([])
   const [loading, setLoading] = useState(true)
+
+  // Toast 提示状态
+  const [toast, setToast] = useState<{ message: string; visible: boolean }>({
+    message: '',
+    visible: false,
+  })
+
+  // Toast 自动消失
+  useEffect(() => {
+    if (toast.visible) {
+      const timer = setTimeout(() => {
+        setToast(prev => ({ ...prev, visible: false }))
+      }, 2000)
+      return () => clearTimeout(timer)
+    }
+  }, [toast.visible])
+
+  const showToast = useCallback((message: string) => {
+    setToast({ message, visible: true })
+  }, [])
 
   // Dialog states
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false)
@@ -854,8 +875,9 @@ export default function PresetsPage() {
     }
   }
 
-  const copyTextToClipboard = (text: string) => {
+  const copyTextToClipboard = (text: string, message?: string) => {
     navigator.clipboard.writeText(text)
+    showToast(message || '已复制到剪贴板')
   }
 
   return (
@@ -987,7 +1009,7 @@ export default function PresetsPage() {
                     variant="ghost"
                     size="icon"
                     className="h-6 w-6"
-                    onClick={() => copyTextToClipboard(generateNoobStr(noobTags))}
+                    onClick={() => copyTextToClipboard(generateNoobStr(noobTags), '已复制 NOOB 格式')}
                   >
                     <Copy className="h-3 w-3" />
                   </Button>
@@ -1080,7 +1102,7 @@ export default function PresetsPage() {
                     variant="ghost"
                     size="icon"
                     className="h-6 w-6"
-                    onClick={() => copyTextToClipboard(generateNaiStr(naiTags))}
+                    onClick={() => copyTextToClipboard(generateNaiStr(naiTags), '已复制 NAI 格式')}
                   >
                     <Copy className="h-3 w-3" />
                   </Button>
@@ -1240,6 +1262,20 @@ export default function PresetsPage() {
           )}
         </div>
       )}
+
+      {/* Toast 提示 */}
+      <AnimatePresence>
+        {toast.visible && (
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] px-4 py-2 bg-foreground text-background rounded-lg shadow-lg text-sm font-medium"
+          >
+            {toast.message}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
