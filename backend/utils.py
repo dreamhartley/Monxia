@@ -29,6 +29,20 @@ BACKGROUNDS_DIR.mkdir(parents=True, exist_ok=True)
 # Danbooru API 配置
 DANBOORU_API_BASE = "https://danbooru.donmai.us"
 
+# 浏览器 TLS/HTTP2 指纹候选列表（按优先级排序）。
+# 背景（2026-08 实测）：Danbooru 的 Cloudflare 防护会拦截主流的现代浏览器指纹
+# （chrome119+、firefox 全系、safari 桌面全系均返回 403 人机验证页，
+# 响应头 cf-mitigated: challenge），仅冷门的旧版指纹可以通过：
+# edge101 与 chrome100~chrome116、safari_ios_beta。
+# 注意：并非 curl_cffi 越新越好——新版只是"多支持更新的浏览器目标"，
+# 而 Cloudflare 恰好重点盯防这些新目标的指纹。首次请求前逐个探测，
+# 选中第一个可用者并缓存；抓取过程中若再次遭遇拦截则令缓存失效，
+# 下一批任务自动重新探测。以后若全部被拦，可升级 curl_cffi 后重新实测调整此列表。
+FINGERPRINT_CANDIDATES = ["edge101", "chrome116", "chrome110", "chrome104", "safari_ios_beta"]
+
+# 当前生效的浏览器指纹（进程内缓存）
+_active_impersonate: Optional[str] = None
+
 # 业务相关请求头
 DEFAULT_HEADERS = {
     "Accept": "application/json, text/plain, */*",
@@ -180,6 +194,58 @@ def get_auth_header(username: str, api_key: str) -> Dict[str, str]:
     return {"Authorization": f"Basic {encoded}"}
 
 
+def _is_cloudflare_challenge(status_code: int, headers, body_head: str) -> bool:
+    """
+    判断响应是否为 Cloudflare 人机验证页（而非正常的 API 响应）
+    """
+    if status_code not in (403, 503):
+        return False
+    if (headers.get("cf-mitigated") or "").lower() == "challenge":
+        return True
+    return "just a moment" in (body_head or "")[:1000].lower()
+
+
+def _invalidate_impersonate():
+    """检测到 Cloudflare 拦截时使指纹缓存失效，下一批任务重新探测"""
+    global _active_impersonate
+    if _active_impersonate:
+        logging.warning(f"浏览器指纹 {_active_impersonate} 已被 Cloudflare 拦截，将重新探测")
+        _active_impersonate = None
+
+
+async def _select_impersonate() -> str:
+    """
+    探测当前可用的浏览器指纹并缓存。
+    以一次轻量请求验证能否正常获取 JSON；被 Cloudflare 拦截则尝试下一个候选。
+    全部失败时仍返回首选指纹，由上层重试与错误处理兜底。
+    """
+    global _active_impersonate
+    if _active_impersonate:
+        return _active_impersonate
+
+    for imp in FINGERPRINT_CANDIDATES:
+        try:
+            async with AsyncSession(impersonate=imp) as session:
+                response = await session.get(
+                    f"{DANBOORU_API_BASE}/counts/posts.json",
+                    params={"tags": "original"},
+                    headers={**DEFAULT_HEADERS},
+                    timeout=15,
+                )
+            if _is_cloudflare_challenge(response.status_code, response.headers, response.text):
+                logging.warning(f"浏览器指纹 {imp} 被 Cloudflare 拦截，尝试下一个")
+                continue
+            _active_impersonate = imp
+            logging.info(f"已选用浏览器指纹: {imp}")
+            return imp
+        except Exception as e:
+            logging.warning(f"浏览器指纹 {imp} 探测异常: {e}")
+
+    _active_impersonate = FINGERPRINT_CANDIDATES[0]
+    logging.warning("所有候选指纹均未通过探测，暂用首选指纹继续抓取")
+    return _active_impersonate
+
+
 async def get_post_count_api(
     session: AsyncSession,
     artist_tag: str,
@@ -206,7 +272,11 @@ async def get_post_count_api(
             data = response.json()
             return data.get("counts", {}).get("posts")
         else:
-            logging.warning(f"获取作品数量失败: HTTP {response.status_code}")
+            if _is_cloudflare_challenge(response.status_code, response.headers, response.text):
+                _invalidate_impersonate()
+                logging.warning("获取作品数量失败: 请求被 Cloudflare 人机验证拦截")
+            else:
+                logging.warning(f"获取作品数量失败: HTTP {response.status_code}")
             return None
     except Exception as e:
         logging.warning(f"获取作品数量异常: {e}")
@@ -238,7 +308,11 @@ async def get_posts_api(
         if response.status_code == 200:
             return response.json()
         else:
-            logging.warning(f"获取帖子列表失败: HTTP {response.status_code}")
+            if _is_cloudflare_challenge(response.status_code, response.headers, response.text):
+                _invalidate_impersonate()
+                logging.warning("获取帖子列表失败: 请求被 Cloudflare 人机验证拦截")
+            else:
+                logging.warning(f"获取帖子列表失败: HTTP {response.status_code}")
             return []
     except Exception as e:
         logging.warning(f"获取帖子列表异常: {e}")
@@ -276,7 +350,11 @@ async def download_image_api(
         )
 
         if response.status_code != 200:
-            logging.warning(f"图片下载失败: HTTP {response.status_code}")
+            if _is_cloudflare_challenge(response.status_code, response.headers, response.text):
+                _invalidate_impersonate()
+                logging.warning("图片下载失败: 请求被 Cloudflare 人机验证拦截")
+            else:
+                logging.warning(f"图片下载失败: HTTP {response.status_code}")
             return None
 
         image_content = response.content
@@ -471,8 +549,9 @@ async def _fetch_post_counts_batch_async(artists: list, concurrency: int = 5) ->
     # 使用信号量控制并发数
     semaphore = asyncio.Semaphore(concurrency)
 
-    # 创建持久化的客户端，使用 chrome 浏览器指纹
-    async with AsyncSession(impersonate="chrome136") as session:
+    # 创建持久化的客户端，使用探测得到的可用浏览器指纹
+    impersonate = await _select_impersonate()
+    async with AsyncSession(impersonate=impersonate) as session:
         async def fetch_with_semaphore(artist: dict) -> Tuple[int, Optional[Dict]]:
             async with semaphore:
                 result = await fetch_artist_data(session, artist, auth_header)
@@ -541,8 +620,9 @@ def fetch_post_counts_streaming(artists: list, concurrency: int = 5):
         # 使用信号量控制并发数
         semaphore = asyncio.Semaphore(concurrency)
 
-        # 创建持久化的客户端，使用 chrome 浏览器指纹
-        async with AsyncSession(impersonate="chrome136") as session:
+        # 创建持久化的客户端，使用探测得到的可用浏览器指纹
+        impersonate = await _select_impersonate()
+        async with AsyncSession(impersonate=impersonate) as session:
             async def process_artist(artist: dict, worker_id: int):
                 nonlocal completed_count
                 async with semaphore:
