@@ -19,6 +19,9 @@ ENV/
 artist_images/*
 !artist_images/.gitkeep
 
+# Docker Compose 本地持久化数据目录
+data/
+
 # IDE
 .idea/
 .vscode/
