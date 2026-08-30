@@ -1,0 +1,40 @@
+# 梦匣 Monxia - Docker Compose 启动配置
+#
+# 用法：
+#   docker compose up -d --build   # 构建并启动
+#   docker compose logs -f         # 查看日志
+#   docker compose down            # 停止（数据保留在 ./data）
+#
+# 数据持久化：所有数据（artists.db / config.db / artist_images/ / backgrounds/）
+# 统一存放在容器内 /app/data，通过 bind mount 映射到宿主机 ./data 目录，
+# 重建容器或升级镜像后数据不会丢失。
+
+services:
+  monxia:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: monxia:latest
+    container_name: monxia
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      # 数据目录（与 Dockerfile 中的默认值一致，显式声明便于查看）
+      - DATA_DIR=/app/data
+      # 时区（影响日志时间戳，可按需修改）
+      - TZ=Asia/Shanghai
+    volumes:
+      # 核心持久化挂载：数据库与图片全部落在宿主机 ./data 下
+      - ./data:/app/data
+    healthcheck:
+      # python:3.12-slim 镜像内没有 curl/wget，用 Python 标准库探测健康检查接口
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5000/api/health', timeout=5).status == 200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
