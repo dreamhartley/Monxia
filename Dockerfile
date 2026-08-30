@@ -28,7 +28,9 @@ WORKDIR /app
 COPY backend/requirements.txt ./backend/
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r backend/requirements.txt
+# 抓取 Danbooru 需要 Playwright 的 Chromium（含系统依赖）
+RUN pip install --no-cache-dir -r backend/requirements.txt \
+    && python -m playwright install --with-deps chromium
 
 # Copy backend source code
 COPY backend/ ./backend/

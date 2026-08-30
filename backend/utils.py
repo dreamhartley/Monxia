@@ -1,59 +1,22 @@
 """
-工具函数:画师名称处理、链接生成、作品数量获取（使用 Danbooru API）
+工具函数:画师名称处理、链接生成、作品数量获取（通过 Playwright 访问 Danbooru API）
 """
 import re
 import logging
 import random
 import os
 import asyncio
-import base64
-from io import BytesIO
-from pathlib import Path
 from typing import Optional, Dict, Tuple, List
-from curl_cffi.requests import AsyncSession
-from PIL import Image
+
+from danbooru_client import (
+    DanbooruClient,
+    get_auth_header,
+    IMAGES_DIR,
+    BACKGROUNDS_DIR,
+    BROWSER_HEADLESS,
+)
 
 logging.basicConfig(level=logging.INFO)
-
-# 数据目录（支持通过环境变量配置，默认为 backend 目录）
-DATA_DIR = Path(os.environ.get('DATA_DIR', Path(__file__).parent))
-
-# 图片存储目录
-IMAGES_DIR = DATA_DIR / 'artist_images'
-IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-
-# 登录背景图存储目录
-BACKGROUNDS_DIR = DATA_DIR / 'backgrounds'
-BACKGROUNDS_DIR.mkdir(parents=True, exist_ok=True)
-
-# Danbooru API 配置
-DANBOORU_API_BASE = "https://danbooru.donmai.us"
-
-# 浏览器 TLS/HTTP2 指纹候选列表（按优先级排序）。
-# 背景（2026-08 实测）：Danbooru 的 Cloudflare 防护会拦截主流的现代浏览器指纹
-# （chrome119+、firefox 全系、safari 桌面全系均返回 403 人机验证页，
-# 响应头 cf-mitigated: challenge），仅冷门的旧版指纹可以通过：
-# edge101 与 chrome100~chrome116、safari_ios_beta。
-# 注意：并非 curl_cffi 越新越好——新版只是"多支持更新的浏览器目标"，
-# 而 Cloudflare 恰好重点盯防这些新目标的指纹。首次请求前逐个探测，
-# 选中第一个可用者并缓存；抓取过程中若再次遭遇拦截则令缓存失效，
-# 下一批任务自动重新探测。以后若全部被拦，可升级 curl_cffi 后重新实测调整此列表。
-FINGERPRINT_CANDIDATES = ["edge101", "chrome116", "chrome110", "chrome104", "safari_ios_beta"]
-
-# 当前生效的浏览器指纹（进程内缓存）
-_active_impersonate: Optional[str] = None
-
-# 业务相关请求头
-DEFAULT_HEADERS = {
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://danbooru.donmai.us/",
-    "Origin": "https://danbooru.donmai.us",
-    # Sec-Fetch 系列：模拟 XHR/API 请求
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-origin",
-}
 
 # -------------------------------
 # 画师名称处理
@@ -182,72 +145,8 @@ def extract_artist_tag_from_url(url: str) -> str:
     return ""
 
 
-def get_auth_header(username: str, api_key: str) -> Dict[str, str]:
-    """
-    生成 Danbooru API 认证头
-    使用 HTTP Basic Auth: base64(username:api_key)
-    """
-    if not username or not api_key:
-        return {}
-    credentials = f"{username}:{api_key}"
-    encoded = base64.b64encode(credentials.encode()).decode()
-    return {"Authorization": f"Basic {encoded}"}
-
-
-def _is_cloudflare_challenge(status_code: int, headers, body_head: str) -> bool:
-    """
-    判断响应是否为 Cloudflare 人机验证页（而非正常的 API 响应）
-    """
-    if status_code not in (403, 503):
-        return False
-    if (headers.get("cf-mitigated") or "").lower() == "challenge":
-        return True
-    return "just a moment" in (body_head or "")[:1000].lower()
-
-
-def _invalidate_impersonate():
-    """检测到 Cloudflare 拦截时使指纹缓存失效，下一批任务重新探测"""
-    global _active_impersonate
-    if _active_impersonate:
-        logging.warning(f"浏览器指纹 {_active_impersonate} 已被 Cloudflare 拦截，将重新探测")
-        _active_impersonate = None
-
-
-async def _select_impersonate() -> str:
-    """
-    探测当前可用的浏览器指纹并缓存。
-    以一次轻量请求验证能否正常获取 JSON；被 Cloudflare 拦截则尝试下一个候选。
-    全部失败时仍返回首选指纹，由上层重试与错误处理兜底。
-    """
-    global _active_impersonate
-    if _active_impersonate:
-        return _active_impersonate
-
-    for imp in FINGERPRINT_CANDIDATES:
-        try:
-            async with AsyncSession(impersonate=imp) as session:
-                response = await session.get(
-                    f"{DANBOORU_API_BASE}/counts/posts.json",
-                    params={"tags": "original"},
-                    headers={**DEFAULT_HEADERS},
-                    timeout=15,
-                )
-            if _is_cloudflare_challenge(response.status_code, response.headers, response.text):
-                logging.warning(f"浏览器指纹 {imp} 被 Cloudflare 拦截，尝试下一个")
-                continue
-            _active_impersonate = imp
-            logging.info(f"已选用浏览器指纹: {imp}")
-            return imp
-        except Exception as e:
-            logging.warning(f"浏览器指纹 {imp} 探测异常: {e}")
-
-    _active_impersonate = FINGERPRINT_CANDIDATES[0]
-    logging.warning("所有候选指纹均未通过探测，暂用首选指纹继续抓取")
-    return _active_impersonate
-
-
 async def get_post_count_api(
-    session: AsyncSession,
+    client: DanbooruClient,
     artist_tag: str,
     auth_header: Dict[str, str] = None
 ) -> Optional[int]:
@@ -257,34 +156,14 @@ async def get_post_count_api(
     返回: {"counts": {"posts": 数量}}
     """
     try:
-        headers = {**DEFAULT_HEADERS}
-        if auth_header:
-            headers.update(auth_header)
-
-        response = await session.get(
-            f"{DANBOORU_API_BASE}/counts/posts.json",
-            params={"tags": artist_tag},
-            headers=headers,
-            timeout=30
-        )
-
-        if response.status_code == 200:
-            data = response.json()
-            return data.get("counts", {}).get("posts")
-        else:
-            if _is_cloudflare_challenge(response.status_code, response.headers, response.text):
-                _invalidate_impersonate()
-                logging.warning("获取作品数量失败: 请求被 Cloudflare 人机验证拦截")
-            else:
-                logging.warning(f"获取作品数量失败: HTTP {response.status_code}")
-            return None
+        return await client.get_post_count(artist_tag, auth_header)
     except Exception as e:
         logging.warning(f"获取作品数量异常: {e}")
         return None
 
 
 async def get_posts_api(
-    session: AsyncSession,
+    client: DanbooruClient,
     artist_tag: str,
     limit: int = 10,
     auth_header: Dict[str, str] = None
@@ -294,33 +173,14 @@ async def get_posts_api(
     GET /posts.json?tags={artist_tag}&limit={limit}
     """
     try:
-        headers = {**DEFAULT_HEADERS}
-        if auth_header:
-            headers.update(auth_header)
-
-        response = await session.get(
-            f"{DANBOORU_API_BASE}/posts.json",
-            params={"tags": artist_tag, "limit": limit},
-            headers=headers,
-            timeout=30
-        )
-
-        if response.status_code == 200:
-            return response.json()
-        else:
-            if _is_cloudflare_challenge(response.status_code, response.headers, response.text):
-                _invalidate_impersonate()
-                logging.warning("获取帖子列表失败: 请求被 Cloudflare 人机验证拦截")
-            else:
-                logging.warning(f"获取帖子列表失败: HTTP {response.status_code}")
-            return []
+        return await client.get_posts(artist_tag, limit, auth_header)
     except Exception as e:
         logging.warning(f"获取帖子列表异常: {e}")
         return []
 
 
 async def download_image_api(
-    session: AsyncSession,
+    client: DanbooruClient,
     url: str,
     artist_identifier: str,
     timeout: int = 30
@@ -331,66 +191,14 @@ async def download_image_api(
     """
     try:
         logging.info(f"正在下载图片: {url[:80]}...")
-
-        # 图片下载使用不同的 Sec-Fetch 头（跨站图片请求）
-        image_headers = {
-            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://danbooru.donmai.us/",
-            "Sec-Fetch-Dest": "image",
-            "Sec-Fetch-Mode": "no-cors",
-            "Sec-Fetch-Site": "cross-site",
-        }
-
-        response = await session.get(
-            url,
-            headers=image_headers,
-            timeout=timeout,
-            allow_redirects=True
-        )
-
-        if response.status_code != 200:
-            if _is_cloudflare_challenge(response.status_code, response.headers, response.text):
-                _invalidate_impersonate()
-                logging.warning("图片下载失败: 请求被 Cloudflare 人机验证拦截")
-            else:
-                logging.warning(f"图片下载失败: HTTP {response.status_code}")
-            return None
-
-        image_content = response.content
-
-        # 使用 Pillow 处理图片：转换为 JPEG 格式，质量 80%
-        try:
-            with Image.open(BytesIO(image_content)) as img:
-                # 转换为 RGB 模式（处理 PNG 透明通道等）
-                if img.mode in ('RGBA', 'P', 'LA'):
-                    img = img.convert('RGB')
-
-                # 生成文件名（统一使用 .jpg 后缀）
-                filename = f"{artist_identifier}.jpg"
-                filepath = IMAGES_DIR / filename
-
-                # 如果已存在同标识符的其他格式图片，先删除
-                for old_file in IMAGES_DIR.glob(f"{artist_identifier}.*"):
-                    if old_file.name != filename:
-                        old_file.unlink()
-                        logging.info(f"删除旧图片: {old_file.name}")
-
-                # 保存为 JPEG
-                img.save(filepath, 'JPEG', quality=80, optimize=True)
-                logging.info(f"图片已转换并保存为 JPEG: {filename}")
-                return filename
-        except Exception as e:
-            logging.error(f"图片处理失败: {e}")
-            return None
-
+        return await client.download_image(url, artist_identifier, timeout)
     except Exception as e:
         logging.warning(f"下载图片失败: {url} - {e}")
         return None
 
 
 async def get_example_image_api(
-    session: AsyncSession,
+    client: DanbooruClient,
     artist_tag: str,
     artist_identifier: str,
     auth_header: Dict[str, str] = None,
@@ -402,7 +210,7 @@ async def get_example_image_api(
     """
     try:
         # 获取帖子列表
-        posts = await get_posts_api(session, artist_tag, limit=10, auth_header=auth_header)
+        posts = await get_posts_api(client, artist_tag, limit=10, auth_header=auth_header)
 
         if not posts:
             logging.debug(f"未找到画师 {artist_tag} 的帖子")
@@ -435,7 +243,7 @@ async def get_example_image_api(
                 continue
 
             logging.info(f"尝试下载图片 ({attempt + 1}/{max_retries}): {image_url[:80]}...")
-            filename = await download_image_api(session, image_url, artist_identifier)
+            filename = await download_image_api(client, image_url, artist_identifier)
 
             if filename:
                 logging.info(f"图片下载成功: {filename}")
@@ -452,7 +260,7 @@ async def get_example_image_api(
 
 
 async def fetch_artist_data(
-    session: AsyncSession,
+    client: DanbooruClient,
     artist: dict,
     auth_header: Dict[str, str] = None,
     retry_count: int = 3
@@ -480,8 +288,8 @@ async def fetch_artist_data(
             logging.info(f"正在获取画师 {name} 的数据...")
 
             # 并行获取作品数量和示例图
-            post_count_task = get_post_count_api(session, artist_tag, auth_header)
-            example_image_task = get_example_image_api(session, artist_tag, artist_identifier, auth_header)
+            post_count_task = get_post_count_api(client, artist_tag, auth_header)
+            example_image_task = get_example_image_api(client, artist_tag, artist_identifier, auth_header)
 
             post_count, example_image = await asyncio.gather(
                 post_count_task,
@@ -546,15 +354,21 @@ async def _fetch_post_counts_batch_async(artists: list, concurrency: int = 5) ->
     if not valid_artists:
         return results
 
-    # 使用信号量控制并发数
-    semaphore = asyncio.Semaphore(concurrency)
+    # 启动浏览器客户端（内部含页面池与 Cloudflare 验证），供整批任务复用
+    client = DanbooruClient(headless=BROWSER_HEADLESS, concurrency=concurrency)
+    try:
+        await client.start()
+    except Exception as e:
+        logging.error(f"启动浏览器失败，无法抓取 Danbooru 数据: {e}")
+        return results
 
-    # 创建持久化的客户端，使用探测得到的可用浏览器指纹
-    impersonate = await _select_impersonate()
-    async with AsyncSession(impersonate=impersonate) as session:
+    try:
+        # 使用信号量控制并发数
+        semaphore = asyncio.Semaphore(concurrency)
+
         async def fetch_with_semaphore(artist: dict) -> Tuple[int, Optional[Dict]]:
             async with semaphore:
-                result = await fetch_artist_data(session, artist, auth_header)
+                result = await fetch_artist_data(client, artist, auth_header)
                 # 短暂等待避免请求过快
                 await asyncio.sleep(0.65)
                 return result
@@ -571,6 +385,8 @@ async def _fetch_post_counts_batch_async(artists: list, concurrency: int = 5) ->
             artist_id, result = item
             if result is not None:
                 results[artist_id] = result
+    finally:
+        await client.close()
 
     return results
 
@@ -617,12 +433,19 @@ def fetch_post_counts_streaming(artists: list, concurrency: int = 5):
         # 获取认证信息
         auth_header = _get_danbooru_auth()
 
-        # 使用信号量控制并发数
-        semaphore = asyncio.Semaphore(concurrency)
+        # 启动浏览器客户端（内部含页面池与 Cloudflare 验证），供整批任务复用
+        client = DanbooruClient(headless=BROWSER_HEADLESS, concurrency=concurrency)
+        try:
+            await client.start()
+        except Exception as e:
+            logging.error(f"启动浏览器失败，无法抓取 Danbooru 数据: {e}")
+            result_queue.put({'type': 'done'})
+            return
 
-        # 创建持久化的客户端，使用探测得到的可用浏览器指纹
-        impersonate = await _select_impersonate()
-        async with AsyncSession(impersonate=impersonate) as session:
+        try:
+            # 使用信号量控制并发数
+            semaphore = asyncio.Semaphore(concurrency)
+
             async def process_artist(artist: dict, worker_id: int):
                 nonlocal completed_count
                 async with semaphore:
@@ -650,8 +473,8 @@ def fetch_post_counts_streaming(artists: list, concurrency: int = 5):
                         logging.info(f"[Worker-{worker_id}] 正在获取画师 {name} 的数据...")
 
                         # 并行获取数据
-                        post_count_task = get_post_count_api(session, artist_tag, auth_header)
-                        example_image_task = get_example_image_api(session, artist_tag, artist_identifier, auth_header)
+                        post_count_task = get_post_count_api(client, artist_tag, auth_header)
+                        example_image_task = get_example_image_api(client, artist_tag, artist_identifier, auth_header)
 
                         post_count, example_image = await asyncio.gather(
                             post_count_task,
@@ -683,6 +506,8 @@ def fetch_post_counts_streaming(artists: list, concurrency: int = 5):
                 for i, artist in enumerate(valid_artists)
             ]
             await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            await client.close()
 
         # 发送完成信号
         result_queue.put({'type': 'done'})
