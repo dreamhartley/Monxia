@@ -38,7 +38,7 @@
 
 ## 🛠️ 技术栈
 
-- **后端**: Python (Flask), SQLite, curl_cffi
+- **后端**: Python (Flask), SQLite, Playwright (Chromium)
 - **前端**: React, TypeScript, Vite, Tailwind CSS, shadcn/ui
 
 ## 🚀 快速开始
@@ -112,7 +112,12 @@ cd backend
 
 # 安装依赖
 pip install -r requirements.txt
+
+# 安装 Playwright Chromium（抓取 Danbooru 必需）
+python -m playwright install chromium
 ```
+
+> Linux 下若浏览器启动报缺少系统库，请执行 `sudo python -m playwright install-deps chromium`。
 
 #### 2. 前端构建
 

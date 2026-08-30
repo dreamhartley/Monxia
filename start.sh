@@ -110,6 +110,14 @@ if [ $FIRST_RUN -eq 1 ]; then
         echo "[Error] Python dependency installation failed"
         exit 1
     fi
+    # 抓取 Danbooru 需要 Playwright 的 Chromium
+    echo "[4/5] Installing Playwright Chromium..."
+    python -m playwright install chromium
+    if [ $? -ne 0 ]; then
+        echo "[Error] Playwright Chromium installation failed"
+        exit 1
+    fi
+    # Linux 下若浏览器启动报缺系统库，请执行: sudo python -m playwright install-deps chromium
 else
     echo "[4/5] Virtual environment exists, skipping dependency installation"
     echo "      To update dependencies, delete backend/venv directory and run again"
