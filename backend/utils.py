@@ -165,41 +165,6 @@ def extract_artist_tag_from_url(url: str) -> str:
     return extract_tag_from_link(url)
 
 
-async def get_post_count_api(
-    client: BooruClientBase,
-    artist_tag: str,
-) -> Optional[int]:
-    """
-    通过 API 获取作品数量
-    Danbooru: GET /counts/posts.json?tags={tag}
-    Gelbooru: page=dapi&s=post&tags={tag}&limit=1 -> @attributes.count
-    """
-    try:
-        return await client.get_post_count(artist_tag)
-    except BooruError:
-        raise
-    except Exception as e:
-        logging.warning(f"获取作品数量异常: {e}")
-        return None
-
-
-async def get_posts_api(
-    client: BooruClientBase,
-    artist_tag: str,
-    limit: int = 10,
-) -> List[Dict]:
-    """
-    通过 API 获取帖子列表（统一结构：id / image_url / preview_url / tags）
-    """
-    try:
-        return await client.get_posts(artist_tag, limit)
-    except BooruError:
-        raise
-    except Exception as e:
-        logging.warning(f"获取帖子列表异常: {e}")
-        return []
-
-
 async def download_image_api(
     client: BooruClientBase,
     url: str,
@@ -220,29 +185,43 @@ async def download_image_api(
         return None
 
 
-async def get_example_image_api(
+async def get_artist_summary_api(
     client: BooruClientBase,
     artist_tag: str,
+    limit: int = 10,
+) -> Tuple[Optional[int], List[Dict]]:
+    """
+    一次获取作品数量与帖子列表。
+    Danbooru 分两次请求；Gelbooru 可在一次响应里同时拿到（少一次请求，降低被限流的概率）。
+    """
+    try:
+        return await client.get_artist_summary(artist_tag, limit)
+    except BooruError:
+        raise
+    except Exception as e:
+        logging.warning(f"获取画师数据异常: {e}")
+        return None, []
+
+
+async def pick_and_download_image(
+    client: BooruClientBase,
+    posts: List[Dict],
     artist_identifier: str,
     max_retries: int = 5
 ) -> Optional[str]:
     """
-    获取画师的示例图片并下载到本地
-    随机从前10张图片中选择一张下载
+    从已获取的帖子列表中随机挑一张图下载（避免重复请求帖子列表）
     """
     try:
-        # 获取帖子列表
-        posts = await get_posts_api(client, artist_tag, limit=10)
-
         if not posts:
-            logging.debug(f"未找到画师 {artist_tag} 的帖子")
+            logging.debug("未找到画师的帖子")
             return None
 
         # 过滤出有图片URL的帖子
         valid_posts = [p for p in posts if p.get('image_url')]
 
         if not valid_posts:
-            logging.debug(f"未找到有效的图片帖子")
+            logging.debug("未找到有效的图片帖子")
             return None
 
         # 记录已尝试的图片
@@ -327,14 +306,9 @@ async def fetch_artist_data(
         try:
             logging.info(f"正在获取画师 {name} 的数据（来源: {source}）...")
 
-            # 并行获取作品数量和示例图
-            post_count_task = get_post_count_api(client, artist_tag)
-            example_image_task = get_example_image_api(client, artist_tag, artist_identifier)
-
-            post_count, example_image = await asyncio.gather(
-                post_count_task,
-                example_image_task
-            )
+            # 一次请求拿到作品数与帖子列表（Gelbooru 只需一次请求），再从结果里挑图
+            post_count, posts = await get_artist_summary_api(client, artist_tag, limit=10)
+            example_image = await pick_and_download_image(client, posts, artist_identifier)
 
             if post_count is not None:
                 logging.info(f"画师 {name} - 作品数量: {post_count}, 示例图: {example_image or 'None'}")
@@ -348,7 +322,7 @@ async def fetch_artist_data(
                 raise Exception("无法获取作品数量")
 
         except BooruError:
-            # 凭据/配置类错误无需重试
+            # 凭据 / 配置 / 限流类错误无需在这里重试（客户端内部已做退避），直接上报
             raise
         except Exception as e:
             logging.warning(f"第 {attempt+1} 次尝试获取 {name} 数据失败: {e}")
@@ -394,7 +368,8 @@ async def _fetch_post_counts_batch_async(artists: list, concurrency: Optional[in
     try:
         # 使用信号量控制并发数
         semaphore = asyncio.Semaphore(concurrency)
-        interval = 0.65 if source == SOURCE_DANBOORU else 0.35
+        # Gelbooru 客户端内部已做请求节流，这里再加一点间隔，避免图片下载过于密集
+        interval = 0.65 if source == SOURCE_DANBOORU else 0.2
 
         async def fetch_with_semaphore(artist: dict) -> Tuple[int, Optional[Dict]]:
             async with semaphore:
@@ -407,8 +382,10 @@ async def _fetch_post_counts_batch_async(artists: list, concurrency: Optional[in
         tasks = [fetch_with_semaphore(artist) for artist in valid_artists]
         task_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # 收集结果
+        # 收集结果；凭据 / 限流类错误直接上报，避免把 429 伪装成「画师抓取失败」
         for item in task_results:
+            if isinstance(item, BooruError):
+                raise item
             if isinstance(item, Exception):
                 logging.error(f"任务异常: {item}")
                 continue
@@ -517,14 +494,9 @@ def fetch_post_counts_streaming(artists: list, concurrency: Optional[int] = None
 
                         logging.info(f"[Worker-{worker_id}] 正在获取画师 {name} 的数据（来源: {source}）...")
 
-                        # 并行获取数据
-                        post_count_task = get_post_count_api(client, artist_tag)
-                        example_image_task = get_example_image_api(client, artist_tag, artist_identifier)
-
-                        post_count, example_image = await asyncio.gather(
-                            post_count_task,
-                            example_image_task
-                        )
+                        # 一次请求拿到作品数与帖子列表（Gelbooru 只需一次），再从中挑图
+                        post_count, posts = await get_artist_summary_api(client, artist_tag, limit=10)
+                        example_image = await pick_and_download_image(client, posts, artist_identifier)
 
                         # 双向补全两个站点的链接
                         danbooru_link, gelbooru_link = sync_links(

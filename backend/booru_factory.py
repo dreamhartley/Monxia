@@ -6,15 +6,16 @@ Booru 抓取客户端工厂
   - gelbooru：HTTP 客户端，必须配置 user_id + api_key
 """
 import logging
+import os
 from typing import Optional
 
 from booru_base import BooruClientBase, BooruConfigError
 from booru_links import SOURCE_GELBOORU, normalize_source
 
-# 各站点的默认并发数
+# 各站点的默认并发数（Gelbooru 的 API 请求在客户端内部串行，这里主要控制图片下载并发）
 DEFAULT_CONCURRENCY = {
     'danbooru': 5,
-    'gelbooru': 3,
+    'gelbooru': int(os.environ.get('GELBOORU_CONCURRENCY', '2')),
 }
 
 
