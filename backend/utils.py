@@ -1,5 +1,5 @@
 """
-工具函数:画师名称处理、链接生成、作品数量获取（通过 Playwright 访问 Danbooru API）
+工具函数:画师名称处理、链接生成、作品数量与封面抓取（Danbooru / Gelbooru 双数据源）
 """
 import re
 import logging
@@ -8,12 +8,20 @@ import os
 import asyncio
 from typing import Optional, Dict, Tuple, List
 
-from danbooru_client import (
-    DanbooruClient,
-    get_auth_header,
+from booru_base import (
+    BooruClientBase,
+    BooruError,
     IMAGES_DIR,
-    BACKGROUNDS_DIR,
-    BROWSER_HEADLESS,
+    BACKGROUNDS_DIR,  # noqa: F401  (app.py 从 utils 导入，保持原有导入路径)
+)
+from booru_links import (
+    SOURCE_DANBOORU,
+    SOURCE_GELBOORU,
+    build_link_from_name,
+    extract_tag_from_link,
+    link_for_source,
+    normalize_source,
+    sync_links,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -57,24 +65,19 @@ def generate_danbooru_link(artist_name: str) -> str:
     2. 去除括号转义
     3. 将所有空格转为下划线
     """
-    if not isinstance(artist_name, str) or artist_name.strip() == "":
-        return ""
-    raw_name = artist_name
-    if raw_name.startswith("artist:"):
-        raw_name = raw_name[7:]
-    raw_name = re.sub(r'\\([()])', r'\1', raw_name)
-    # 将所有空格转换为下划线
-    converted_artist = "_".join(raw_name.split())
-    return f"https://danbooru.donmai.us/posts?tags={converted_artist}"
+    return build_link_from_name(SOURCE_DANBOORU, artist_name)
+
+
+def generate_gelbooru_link(artist_name: str) -> str:
+    """根据画师名称生成 Gelbooru 链接（标签转换规则与 Danbooru 一致）"""
+    return build_link_from_name(SOURCE_GELBOORU, artist_name)
 
 def extract_artist_from_link(url: str) -> str:
     """
-    从 Danbooru 链接反推画师名称
+    从 Booru 链接反推画师名称（Danbooru / Gelbooru 均可）
     """
-    if not isinstance(url, str) or not url.startswith("https://danbooru.donmai.us/posts?tags="):
-        return ""
-    extracted = url.replace("https://danbooru.donmai.us/posts?tags=", "")
-    return extracted.replace('_', ' ')
+    tag = extract_tag_from_link(url)
+    return tag.replace('_', ' ') if tag else ''
 
 def auto_complete_names(name_noob: str, name_nai: str, danbooru_link: str) -> tuple:
     """
@@ -125,62 +128,80 @@ def auto_complete_names(name_noob: str, name_nai: str, danbooru_link: str) -> tu
     return name_noob, name_nai, danbooru_link
 
 
+def auto_complete_artist(name_noob: str, name_nai: str,
+                         danbooru_link: str = "", gelbooru_link: str = "") -> tuple:
+    """
+    自动补全画师信息（名称 + 两个站点的链接）
+    返回: (name_noob, name_nai, danbooru_link, gelbooru_link)
+
+    规则：先按原有逻辑补全名称与 Danbooru 链接，再由任一链接推导出另一站点的
+    链接；两边都有链接时原样保留（尊重用户手动修改）。
+    """
+    # 名称全为空时，允许从 Gelbooru 链接反推名称
+    if (not name_noob or not name_noob.strip()) and (not name_nai or not name_nai.strip()):
+        source_link = (danbooru_link or gelbooru_link or '').strip()
+        if source_link:
+            original_artist = extract_artist_from_link(source_link)
+            if original_artist:
+                name_noob = format_noob(original_artist)
+                name_nai = format_nai(original_artist)
+
+    name_noob, name_nai, danbooru_link = auto_complete_names(name_noob, name_nai, danbooru_link)
+    danbooru_link, gelbooru_link = sync_links(name_noob, name_nai, danbooru_link, gelbooru_link)
+    return name_noob, name_nai, danbooru_link, gelbooru_link
+
+
 # -------------------------------
-# Danbooru API 辅助函数
+# Booru API 辅助函数
 # -------------------------------
 
 def extract_artist_tag_from_url(url: str) -> str:
     """
-    从 Danbooru 链接提取画师标签名
-    https://danbooru.donmai.us/posts?tags=artist_name -> artist_name
+    从 Danbooru / Gelbooru 链接提取画师标签名
+    兼容:
+      https://danbooru.donmai.us/posts?tags=artist_name
+      https://gelbooru.com/index.php?page=post&s=list&tags=artist_name
     """
-    if not isinstance(url, str):
-        return ""
-    # 处理各种可能的 URL 格式
-    if "tags=" in url:
-        # 提取 tags 参数
-        match = re.search(r'tags=([^&]+)', url)
-        if match:
-            return match.group(1)
-    return ""
+    return extract_tag_from_link(url)
 
 
 async def get_post_count_api(
-    client: DanbooruClient,
+    client: BooruClientBase,
     artist_tag: str,
-    auth_header: Dict[str, str] = None
 ) -> Optional[int]:
     """
     通过 API 获取作品数量
-    GET /counts/posts.json?tags={artist_tag}
-    返回: {"counts": {"posts": 数量}}
+    Danbooru: GET /counts/posts.json?tags={tag}
+    Gelbooru: page=dapi&s=post&tags={tag}&limit=1 -> @attributes.count
     """
     try:
-        return await client.get_post_count(artist_tag, auth_header)
+        return await client.get_post_count(artist_tag)
+    except BooruError:
+        raise
     except Exception as e:
         logging.warning(f"获取作品数量异常: {e}")
         return None
 
 
 async def get_posts_api(
-    client: DanbooruClient,
+    client: BooruClientBase,
     artist_tag: str,
     limit: int = 10,
-    auth_header: Dict[str, str] = None
 ) -> List[Dict]:
     """
-    通过 API 获取帖子列表
-    GET /posts.json?tags={artist_tag}&limit={limit}
+    通过 API 获取帖子列表（统一结构：id / image_url / preview_url / tags）
     """
     try:
-        return await client.get_posts(artist_tag, limit, auth_header)
+        return await client.get_posts(artist_tag, limit)
+    except BooruError:
+        raise
     except Exception as e:
         logging.warning(f"获取帖子列表异常: {e}")
         return []
 
 
 async def download_image_api(
-    client: DanbooruClient,
+    client: BooruClientBase,
     url: str,
     artist_identifier: str,
     timeout: int = 30
@@ -192,16 +213,17 @@ async def download_image_api(
     try:
         logging.info(f"正在下载图片: {url[:80]}...")
         return await client.download_image(url, artist_identifier, timeout)
+    except BooruError:
+        raise
     except Exception as e:
         logging.warning(f"下载图片失败: {url} - {e}")
         return None
 
 
 async def get_example_image_api(
-    client: DanbooruClient,
+    client: BooruClientBase,
     artist_tag: str,
     artist_identifier: str,
-    auth_header: Dict[str, str] = None,
     max_retries: int = 5
 ) -> Optional[str]:
     """
@@ -210,14 +232,14 @@ async def get_example_image_api(
     """
     try:
         # 获取帖子列表
-        posts = await get_posts_api(client, artist_tag, limit=10, auth_header=auth_header)
+        posts = await get_posts_api(client, artist_tag, limit=10)
 
         if not posts:
             logging.debug(f"未找到画师 {artist_tag} 的帖子")
             return None
 
         # 过滤出有图片URL的帖子
-        valid_posts = [p for p in posts if p.get('large_file_url') or p.get('file_url')]
+        valid_posts = [p for p in posts if p.get('image_url')]
 
         if not valid_posts:
             logging.debug(f"未找到有效的图片帖子")
@@ -236,8 +258,8 @@ async def get_example_image_api(
             post = random.choice(available_posts)
             tried_posts.add(post.get('id'))
 
-            # 优先使用 large_file_url（较小），否则使用 file_url（原图）
-            image_url = post.get('large_file_url') or post.get('file_url')
+            # 客户端已按站点归一化：优先较小的 sample / large 版本
+            image_url = post.get('image_url')
 
             if not image_url:
                 continue
@@ -254,27 +276,32 @@ async def get_example_image_api(
         logging.warning("未能下载有效的示例图")
         return None
 
+    except BooruError:
+        raise
     except Exception as e:
         logging.warning(f"获取示例图失败: {e}")
         return None
 
 
 async def fetch_artist_data(
-    client: DanbooruClient,
+    client: BooruClientBase,
     artist: dict,
-    auth_header: Dict[str, str] = None,
+    source: str = SOURCE_DANBOORU,
     retry_count: int = 3
 ) -> Tuple[int, Optional[Dict]]:
     """
-    获取单个画师的作品数量和示例图
-    返回: (artist_id, {'post_count': int, 'example_image': str} 或 None)
+    获取单个画师的作品数量和示例图（按当前数据来源）
+    返回: (artist_id, {'post_count', 'example_image', 'danbooru_link'?, 'gelbooru_link'?} 或 None)
     """
     artist_id = artist['id']
     artist_identifier = artist.get('uuid') or str(artist_id)
-    url = artist.get('danbooru_link', '')
     name = artist.get('name', 'Unknown')
+    source = normalize_source(source)
 
-    if not url or not url.strip():
+    # 取当前来源下的链接：优先已保存的，缺失时按名称即时生成
+    url = link_for_source(artist, source)
+    if not url:
+        logging.debug(f"画师 {name} 缺少可用的 {source} 链接，跳过")
         return artist_id, None
 
     # 从 URL 提取画师标签
@@ -283,13 +310,26 @@ async def fetch_artist_data(
         logging.warning(f"无法从 URL 提取画师标签: {url}")
         return artist_id, None
 
+    # 双向补全两个站点的链接（用户已手动填写的不会被覆盖）
+    danbooru_link, gelbooru_link = sync_links(
+        artist.get('name_noob'),
+        artist.get('name_nai'),
+        artist.get('danbooru_link'),
+        artist.get('gelbooru_link'),
+    )
+    link_updates = {}
+    if danbooru_link and danbooru_link != (artist.get('danbooru_link') or '').strip():
+        link_updates['danbooru_link'] = danbooru_link
+    if gelbooru_link and gelbooru_link != (artist.get('gelbooru_link') or '').strip():
+        link_updates['gelbooru_link'] = gelbooru_link
+
     for attempt in range(retry_count):
         try:
-            logging.info(f"正在获取画师 {name} 的数据...")
+            logging.info(f"正在获取画师 {name} 的数据（来源: {source}）...")
 
             # 并行获取作品数量和示例图
-            post_count_task = get_post_count_api(client, artist_tag, auth_header)
-            example_image_task = get_example_image_api(client, artist_tag, artist_identifier, auth_header)
+            post_count_task = get_post_count_api(client, artist_tag)
+            example_image_task = get_example_image_api(client, artist_tag, artist_identifier)
 
             post_count, example_image = await asyncio.gather(
                 post_count_task,
@@ -298,13 +338,18 @@ async def fetch_artist_data(
 
             if post_count is not None:
                 logging.info(f"画师 {name} - 作品数量: {post_count}, 示例图: {example_image or 'None'}")
-                return artist_id, {
+                result = {
                     'post_count': post_count,
                     'example_image': example_image
                 }
+                result.update(link_updates)
+                return artist_id, result
             else:
                 raise Exception("无法获取作品数量")
 
+        except BooruError:
+            # 凭据/配置类错误无需重试
+            raise
         except Exception as e:
             logging.warning(f"第 {attempt+1} 次尝试获取 {name} 数据失败: {e}")
             if attempt < retry_count - 1:
@@ -314,63 +359,48 @@ async def fetch_artist_data(
             else:
                 logging.error(f"未能获取画师 {name} 的数据")
 
-    return artist_id, None
+    return artist_id, link_updates or None
 
 
 # -------------------------------
 # 批量获取函数（公开接口）
 # -------------------------------
 
-def _get_danbooru_auth() -> Dict[str, str]:
-    """
-    获取 Danbooru API 认证信息
-    从配置数据库读取，如果未配置则返回空字典
-    """
-    try:
-        from config_db import get_danbooru_config
-        config = get_danbooru_config()
-        if config and config.get('username') and config.get('api_key'):
-            return get_auth_header(config['username'], config['api_key'])
-    except Exception as e:
-        logging.debug(f"获取 Danbooru 认证信息失败: {e}")
-    return {}
-
-
-async def _fetch_post_counts_batch_async(artists: list, concurrency: int = 5) -> dict:
+async def _fetch_post_counts_batch_async(artists: list, concurrency: Optional[int] = None,
+                                         source: Optional[str] = None) -> dict:
     """
     内部异步函数：批量获取画师作品数量
     """
+    from booru_factory import create_client, get_concurrency
+
     results = {}
 
     if not artists:
         return results
 
-    # 获取认证信息
-    auth_header = _get_danbooru_auth()
+    source = normalize_source(source)
+    concurrency = concurrency or get_concurrency(source)
 
-    # 过滤有效画师（有链接的）
-    valid_artists = [a for a in artists if a.get('danbooru_link', '').strip()]
+    # 过滤有效画师（当前来源下有可用链接的）
+    valid_artists = [a for a in artists if link_for_source(a, source)]
 
     if not valid_artists:
         return results
 
-    # 启动浏览器客户端（内部含页面池与 Cloudflare 验证），供整批任务复用
-    client = DanbooruClient(headless=BROWSER_HEADLESS, concurrency=concurrency)
-    try:
-        await client.start()
-    except Exception as e:
-        logging.error(f"启动浏览器失败，无法抓取 Danbooru 数据: {e}")
-        return results
+    # 按来源创建客户端（Danbooru 为浏览器页面池，Gelbooru 为 HTTP 客户端）
+    client = create_client(source, concurrency)
+    await client.start()
 
     try:
         # 使用信号量控制并发数
         semaphore = asyncio.Semaphore(concurrency)
+        interval = 0.65 if source == SOURCE_DANBOORU else 0.35
 
         async def fetch_with_semaphore(artist: dict) -> Tuple[int, Optional[Dict]]:
             async with semaphore:
-                result = await fetch_artist_data(client, artist, auth_header)
+                result = await fetch_artist_data(client, artist, source)
                 # 短暂等待避免请求过快
-                await asyncio.sleep(0.65)
+                await asyncio.sleep(interval)
                 return result
 
         # 创建所有任务并并行执行
@@ -391,32 +421,41 @@ async def _fetch_post_counts_batch_async(artists: list, concurrency: int = 5) ->
     return results
 
 
-def fetch_post_counts_batch(artists: list, concurrency: int = 5) -> dict:
+def fetch_post_counts_batch(artists: list, concurrency: Optional[int] = None,
+                            source: Optional[str] = None) -> dict:
     """
     批量获取画师作品数量和示例图（并行版本）
-    artists: 列表,每个元素是字典 {'id': ..., 'uuid': ..., 'danbooru_link': ..., 'name': ...}
-    concurrency: 并行请求数量，默认5个
+    artists: 列表,每个元素是字典 {'id', 'uuid', 'danbooru_link', 'gelbooru_link', 'name' ...}
+    concurrency: 并行请求数量，为空时按站点取默认值
+    source: 数据来源，为空时读取当前设置
     返回: {artist_id: {'post_count': int, 'example_image': str}}
     """
-    return asyncio.run(_fetch_post_counts_batch_async(artists, concurrency))
+    return asyncio.run(_fetch_post_counts_batch_async(artists, concurrency, source))
 
 
-def fetch_post_counts_streaming(artists: list, concurrency: int = 5):
+def fetch_post_counts_streaming(artists: list, concurrency: Optional[int] = None,
+                                source: Optional[str] = None):
     """
     流式批量获取画师作品数量和示例图（并行生成器版本，用于SSE）
-    artists: 列表,每个元素是字典 {'id': ..., 'uuid': ..., 'danbooru_link': ..., 'name': ...}
-    concurrency: 并行请求数量，默认5个
-    生成: {'type': 'progress', ...} 或 {'type': 'result', ...}
+    artists: 列表,每个元素是字典 {'id', 'uuid', 'danbooru_link', 'gelbooru_link', 'name' ...}
+    concurrency: 并行请求数量，为空时按站点取默认值
+    source: 数据来源，为空时读取当前设置
+    生成: {'type': 'progress', ...} 或 {'type': 'result', ...} 或 {'type': 'error', ...}
     """
     import queue
     import threading
+
+    from booru_factory import create_client, get_concurrency
+
+    source = normalize_source(source)
+    concurrency = concurrency or get_concurrency(source)
 
     total = len(artists)
     if total == 0:
         return
 
-    # 过滤有效画师（有链接的）
-    valid_artists = [a for a in artists if a.get('danbooru_link', '').strip()]
+    # 过滤有效画师（当前来源下有可用链接的）
+    valid_artists = [a for a in artists if link_for_source(a, source)]
     valid_total = len(valid_artists)
 
     if valid_total == 0:
@@ -430,28 +469,34 @@ def fetch_post_counts_streaming(artists: list, concurrency: int = 5):
         """异步工作函数"""
         completed_count = 0
 
-        # 获取认证信息
-        auth_header = _get_danbooru_auth()
-
-        # 启动浏览器客户端（内部含页面池与 Cloudflare 验证），供整批任务复用
-        client = DanbooruClient(headless=BROWSER_HEADLESS, concurrency=concurrency)
+        # 按来源创建客户端
         try:
+            client = create_client(source, concurrency)
             await client.start()
+        except BooruError as e:
+            logging.error(f"启动 {source} 抓取客户端失败: {e}")
+            result_queue.put({'type': 'error', 'error': str(e)})
+            result_queue.put({'type': 'done'})
+            return
         except Exception as e:
-            logging.error(f"启动浏览器失败，无法抓取 Danbooru 数据: {e}")
+            logging.error(f"启动 {source} 抓取客户端失败: {e}")
+            result_queue.put({'type': 'error', 'error': str(e)})
             result_queue.put({'type': 'done'})
             return
 
         try:
             # 使用信号量控制并发数
             semaphore = asyncio.Semaphore(concurrency)
+            aborted = False
 
             async def process_artist(artist: dict, worker_id: int):
-                nonlocal completed_count
+                nonlocal completed_count, aborted
                 async with semaphore:
+                    if aborted:
+                        return
                     artist_id = artist['id']
                     artist_identifier = artist.get('uuid') or str(artist_id)
-                    url = artist.get('danbooru_link', '')
+                    url = link_for_source(artist, source)
                     name = artist.get('name', 'Unknown')
 
                     completed_count += 1
@@ -470,30 +515,58 @@ def fetch_post_counts_streaming(artists: list, concurrency: int = 5):
                         if not artist_tag:
                             return
 
-                        logging.info(f"[Worker-{worker_id}] 正在获取画师 {name} 的数据...")
+                        logging.info(f"[Worker-{worker_id}] 正在获取画师 {name} 的数据（来源: {source}）...")
 
                         # 并行获取数据
-                        post_count_task = get_post_count_api(client, artist_tag, auth_header)
-                        example_image_task = get_example_image_api(client, artist_tag, artist_identifier, auth_header)
+                        post_count_task = get_post_count_api(client, artist_tag)
+                        example_image_task = get_example_image_api(client, artist_tag, artist_identifier)
 
                         post_count, example_image = await asyncio.gather(
                             post_count_task,
                             example_image_task
                         )
 
+                        # 双向补全两个站点的链接
+                        danbooru_link, gelbooru_link = sync_links(
+                            artist.get('name_noob'),
+                            artist.get('name_nai'),
+                            artist.get('danbooru_link'),
+                            artist.get('gelbooru_link'),
+                        )
+                        link_updates = {}
+                        if danbooru_link and danbooru_link != (artist.get('danbooru_link') or '').strip():
+                            link_updates['danbooru_link'] = danbooru_link
+                        if gelbooru_link and gelbooru_link != (artist.get('gelbooru_link') or '').strip():
+                            link_updates['gelbooru_link'] = gelbooru_link
+
                         if post_count is not None:
+                            result = {
+                                'post_count': post_count,
+                                'example_image': example_image
+                            }
+                            result.update(link_updates)
                             result_queue.put({
                                 'type': 'result',
                                 'artist_id': artist_id,
                                 'artist_name': name,
-                                'result': {
-                                    'post_count': post_count,
-                                    'example_image': example_image
-                                }
+                                'result': result
                             })
                             logging.info(f"[Worker-{worker_id}] 画师 {name} - 作品数量: {post_count}, 示例图: {example_image or 'None'}")
+                        elif link_updates:
+                            # 即便抓取失败，也把补全好的链接回传保存
+                            result_queue.put({
+                                'type': 'result',
+                                'artist_id': artist_id,
+                                'artist_name': name,
+                                'result': link_updates
+                            })
+                            logging.warning(f"[Worker-{worker_id}] 未能获取画师 {name} 的数据")
                         else:
                             logging.warning(f"[Worker-{worker_id}] 未能获取画师 {name} 的数据")
+                    except BooruError as e:
+                        # 凭据/配置类错误：终止整批任务并反馈给前端
+                        aborted = True
+                        result_queue.put({'type': 'error', 'error': str(e)})
                     except Exception as e:
                         logging.error(f"[Worker-{worker_id}] 处理画师 {name} 时出错: {e}")
                     finally:

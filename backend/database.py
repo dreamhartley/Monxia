@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
+from booru_links import build_link, extract_tag_from_link, SOURCE_GELBOORU
+
 # 数据库文件路径（支持通过环境变量配置，默认为 backend 目录）
 DATA_DIR = Path(os.environ.get('DATA_DIR', Path(__file__).parent))
 DATABASE_PATH = DATA_DIR / "artists.db"
@@ -84,6 +86,16 @@ def init_db():
             cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_uuid ON artists(uuid)")
             print("已添加 uuid 字段到 artists 表并更新现有记录")
 
+        # 添加 gelbooru_link 字段（如果表已存在但没有此字段）
+        try:
+            cursor.execute("SELECT gelbooru_link FROM artists LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute("ALTER TABLE artists ADD COLUMN gelbooru_link TEXT DEFAULT ''")
+            print("已添加 gelbooru_link 字段到 artists 表")
+
+        # 老数据回填：由已保存的 Danbooru 链接转换出 Gelbooru 链接
+        _backfill_gelbooru_links(cursor)
+
         # 创建画师-分类关联表（多对多）
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS artist_categories (
@@ -133,6 +145,43 @@ def init_db():
 
         conn.commit()
         print("数据库初始化成功")
+
+
+def _backfill_gelbooru_links(cursor) -> None:
+    """
+    老数据回填：用已保存的 Danbooru 链接换算出 Gelbooru 链接。
+    只填空值，不覆盖用户手动修改过的链接；同时兼容只有 Gelbooru 链接的情况。
+    """
+    try:
+        cursor.execute(
+            "SELECT id, name_noob, name_nai, danbooru_link, gelbooru_link FROM artists"
+        )
+        rows = cursor.fetchall()
+    except sqlite3.OperationalError as e:
+        print(f"读取画师链接失败，跳过回填: {e}")
+        return
+
+    filled = 0
+    for row in rows:
+        artist_id = row['id']
+        danbooru_link = (row['danbooru_link'] or '').strip()
+        gelbooru_link = (row['gelbooru_link'] or '').strip()
+        if gelbooru_link:
+            continue
+
+        tag = extract_tag_from_link(danbooru_link)
+        if not tag:
+            continue
+
+        cursor.execute(
+            "UPDATE artists SET gelbooru_link = ? WHERE id = ?",
+            (build_link(SOURCE_GELBOORU, tag), artist_id),
+        )
+        filled += 1
+
+    if filled:
+        print(f"已为 {filled} 个画师补充 Gelbooru 链接")
+
 
 def create_category(name: str) -> int:
     """创建新分类"""
@@ -222,8 +271,9 @@ def remove_artist_category(artist_id: int, category_id: int) -> bool:
         return cursor.rowcount > 0
 
 def create_artist(category_ids: List[int], name_noob: str = "", name_nai: str = "",
-                  danbooru_link: str = "", post_count: Optional[int] = None,
-                  notes: str = "", image_example: str = "", skip_danbooru: bool = False) -> int:
+                  danbooru_link: str = "", gelbooru_link: str = "",
+                  post_count: Optional[int] = None, notes: str = "",
+                  image_example: str = "", skip_danbooru: bool = False) -> int:
     """创建新画师（支持多分类）"""
     with get_db() as conn:
         cursor = conn.cursor()
@@ -234,9 +284,10 @@ def create_artist(category_ids: List[int], name_noob: str = "", name_nai: str = 
         # 插入画师基本信息
         cursor.execute("""
             INSERT INTO artists
-            (uuid, name_noob, name_nai, danbooru_link, post_count, notes, image_example, skip_danbooru)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (artist_uuid, name_noob, name_nai, danbooru_link, post_count, notes, image_example, 1 if skip_danbooru else 0))
+            (uuid, name_noob, name_nai, danbooru_link, gelbooru_link, post_count, notes, image_example, skip_danbooru)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (artist_uuid, name_noob, name_nai, danbooru_link, gelbooru_link,
+              post_count, notes, image_example, 1 if skip_danbooru else 0))
         artist_id = cursor.lastrowid
 
         # 添加分类关联
@@ -303,8 +354,8 @@ def get_all_artists() -> List[Dict[str, Any]]:
 
 def update_artist(artist_id: int, **kwargs) -> bool:
     """更新画师信息（支持多分类）"""
-    allowed_fields = ['name_noob', 'name_nai', 'danbooru_link', 'post_count',
-                      'notes', 'image_example', 'skip_danbooru']
+    allowed_fields = ['name_noob', 'name_nai', 'danbooru_link', 'gelbooru_link',
+                      'post_count', 'notes', 'image_example', 'skip_danbooru']
 
     # 处理分类更新（如果提供了 category_ids）
     category_ids = kwargs.pop('category_ids', None)
@@ -507,13 +558,14 @@ def batch_create_artists(artists_data: List[Dict[str, Any]]) -> List[int]:
 
             cursor.execute("""
                 INSERT INTO artists
-                (uuid, name_noob, name_nai, danbooru_link, post_count, notes, image_example, skip_danbooru)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (uuid, name_noob, name_nai, danbooru_link, gelbooru_link, post_count, notes, image_example, skip_danbooru)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 artist_uuid,
                 artist.get('name_noob', ''),
                 artist.get('name_nai', ''),
                 artist.get('danbooru_link', ''),
+                artist.get('gelbooru_link', ''),
                 artist.get('post_count'),
                 artist.get('notes', ''),
                 artist.get('image_example', ''),
@@ -548,8 +600,8 @@ def batch_update_artists(updates: List[Dict[str, Any]]) -> int:
     if not updates:
         return 0
 
-    allowed_fields = ['name_noob', 'name_nai', 'danbooru_link', 'post_count',
-                      'notes', 'image_example', 'skip_danbooru']
+    allowed_fields = ['name_noob', 'name_nai', 'danbooru_link', 'gelbooru_link',
+                      'post_count', 'notes', 'image_example', 'skip_danbooru']
     updated_count = 0
 
     with get_db() as conn:

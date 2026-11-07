@@ -243,6 +243,7 @@ export default function ArtistsPage() {
     name_noob: '',
     name_nai: '',
     danbooru_link: '',
+    gelbooru_link: '',
     post_count: undefined,
     notes: '',
     skip_danbooru: false,
@@ -344,14 +345,14 @@ export default function ArtistsPage() {
         if (selectedCategory === 'all') {
           matchesCategory = true
         } else if (selectedCategory === 'incomplete') {
-          // 待补全：缺少封面图、作品数为0/空，或（未跳过Danbooru且缺少链接）
+          // 待补全：缺少封面图、作品数为0/空，或（未跳过抓取且两个站点链接都缺失）
           const hasImage = !!artist.image_example
           const hasPostCount = !!artist.post_count && artist.post_count > 0
-          const hasLink = !!artist.danbooru_link
+          const hasLink = !!(artist.danbooru_link || artist.gelbooru_link)
           const isSkipped = !!artist.skip_danbooru
 
           if (isSkipped) {
-            // 如果跳过Danbooru，只要有图就算完整（因为无法获取作品数）
+            // 跳过自动抓取时，只要有图就算完整（无法获取作品数）
             matchesCategory = !hasImage
           } else {
             // 否则需要有图、有作品数、有链接
@@ -427,6 +428,7 @@ export default function ArtistsPage() {
       name_noob: '',
       name_nai: '',
       danbooru_link: '',
+      gelbooru_link: '',
       post_count: undefined,
       notes: '',
       skip_danbooru: false,
@@ -671,6 +673,7 @@ export default function ArtistsPage() {
           name_noob: formatNoob(artistName),
           name_nai: formatNai(artistName),
           danbooru_link: '',
+          gelbooru_link: '',
         }
 
         if (autoCompleteRes.success && autoCompleteRes.data) {
@@ -678,6 +681,7 @@ export default function ArtistsPage() {
             name_noob: autoCompleteRes.data.name_noob || formatNoob(artistName),
             name_nai: autoCompleteRes.data.name_nai || formatNai(artistName),
             danbooru_link: autoCompleteRes.data.danbooru_link || '',
+            gelbooru_link: autoCompleteRes.data.gelbooru_link || '',
           }
         }
 
@@ -695,7 +699,7 @@ export default function ArtistsPage() {
           const newArtistId = createRes.data.id
 
           // 3. 尝试获取作品数据 (如果有链接)
-          if (nameData.danbooru_link) {
+          if (nameData.danbooru_link || nameData.gelbooru_link) {
             try {
               await toolsApi.fetchPostCounts([newArtistId])
             } catch (e) {
@@ -761,6 +765,7 @@ export default function ArtistsPage() {
       name_noob: '',
       name_nai: '',
       danbooru_link: '',
+      gelbooru_link: '',
       post_count: undefined,
       notes: '',
       skip_danbooru: false,
@@ -788,6 +793,7 @@ export default function ArtistsPage() {
         name_noob: simpleAddName, // 默认使用用户输入
         name_nai: '',
         danbooru_link: '',
+        gelbooru_link: '',
       }
 
       if (autoCompleteRes.success && autoCompleteRes.data) {
@@ -797,6 +803,9 @@ export default function ArtistsPage() {
           danbooru_link: formData.skip_danbooru
             ? ''
             : autoCompleteRes.data.danbooru_link,
+          gelbooru_link: formData.skip_danbooru
+            ? ''
+            : (autoCompleteRes.data.gelbooru_link || ''),
         }
       }
 
@@ -813,8 +822,8 @@ export default function ArtistsPage() {
       if (createRes.success && createRes.data) {
         const newArtistId = createRes.data.id
 
-        // 3. 尝试获取作品数据 (如果有链接 且 未跳过Danbooru)
-        if (nameData.danbooru_link && !formData.skip_danbooru) {
+        // 3. 尝试获取作品数据 (如果有链接 且 未跳过自动抓取)
+        if ((nameData.danbooru_link || nameData.gelbooru_link) && !formData.skip_danbooru) {
           await toolsApi.fetchPostCounts([newArtistId])
         }
 
@@ -830,6 +839,7 @@ export default function ArtistsPage() {
             name_noob: artist.name_noob || '',
             name_nai: artist.name_nai || '',
             danbooru_link: artist.danbooru_link || '',
+            gelbooru_link: artist.gelbooru_link || '',
             post_count: artist.post_count || undefined,
             notes: artist.notes || '',
             skip_danbooru: artist.skip_danbooru || false,
@@ -855,6 +865,7 @@ export default function ArtistsPage() {
                  name_noob: artist.name_noob || '',
                  name_nai: artist.name_nai || '',
                  danbooru_link: artist.danbooru_link || '',
+                 gelbooru_link: artist.gelbooru_link || '',
                  post_count: artist.post_count || undefined,
                  notes: artist.notes || '',
                  skip_danbooru: artist.skip_danbooru || false,
@@ -887,7 +898,8 @@ export default function ArtistsPage() {
       const res = await toolsApi.autoComplete(
         formData.name_noob || '',
         formData.name_nai || '',
-        formData.danbooru_link || ''
+        formData.danbooru_link || '',
+        formData.gelbooru_link || ''
       )
 
       let newFormData = { ...formData }
@@ -898,13 +910,14 @@ export default function ArtistsPage() {
           name_noob: res.data!.name_noob,
           name_nai: res.data!.name_nai,
           danbooru_link: res.data!.danbooru_link,
+          gelbooru_link: res.data!.gelbooru_link,
         }
         setFormData(newFormData)
         alert('名称补全成功')
       }
 
       // 2. 如果有链接，询问是否获取数据
-      if (newFormData.danbooru_link && !newFormData.skip_danbooru) {
+      if ((newFormData.danbooru_link || newFormData.gelbooru_link) && !newFormData.skip_danbooru) {
         if (
           confirm(
             '是否重新获取该画师的作品数据？这可能会覆盖当前的封面图片。'
@@ -1030,6 +1043,7 @@ export default function ArtistsPage() {
       name_noob: artist.name_noob || '',
       name_nai: artist.name_nai || '',
       danbooru_link: artist.danbooru_link || '',
+      gelbooru_link: artist.gelbooru_link || '',
       post_count: artist.post_count || undefined,
       notes: artist.notes || '',
       skip_danbooru: artist.skip_danbooru || false,
@@ -2038,11 +2052,11 @@ export default function ArtistsPage() {
                   htmlFor="add_skip_danbooru"
                   className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
                 >
-                  跳过 Danbooru 获取
+                  跳过自动抓取（作品数与封面）
                 </label>
               </div>
               <p className="text-xs text-muted-foreground pl-6">
-                勾选后将不会自动从 Danbooru 获取作品数据和封面图片
+                勾选后将不会自动获取作品数据和封面图片（Danbooru / Gelbooru 均生效）
               </p>
             </div>
           </div>
@@ -2309,6 +2323,25 @@ export default function ArtistsPage() {
               </div>
             </div>
 
+            {/* Gelbooru 链接（可手动调整） */}
+            <div className="space-y-1">
+              <Label htmlFor="edit_gelbooru_link">Gelbooru 链接</Label>
+              <Input
+                id="edit_gelbooru_link"
+                value={formData.gelbooru_link || ''}
+                onChange={(e) =>
+                  setFormData((prev) => ({
+                    ...prev,
+                    gelbooru_link: e.target.value,
+                  }))
+                }
+                placeholder="https://gelbooru.com/index.php?page=post&s=list&tags=..."
+              />
+              <p className="text-xs text-muted-foreground">
+                自动生成，两家站点画师标签不一致时可手动调整
+              </p>
+            </div>
+
             {/* 备注 */}
             <div className="space-y-1">
               <Label htmlFor="edit_notes">备注</Label>
@@ -2333,7 +2366,7 @@ export default function ArtistsPage() {
                   }))
                 }
               />
-              <span className="text-sm">跳过 Danbooru 获取</span>
+              <span className="text-sm">跳过自动抓取（作品数与封面）</span>
             </label>
 
             {/* 自动补全按钮 */}

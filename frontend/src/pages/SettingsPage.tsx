@@ -13,14 +13,22 @@ import {
   Image,
   Trash2,
   Key,
+  Database,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { importExportApi, accountApi, backgroundApi, danbooruConfigApi } from '@/lib/api'
-import type { ImportProgress } from '@/lib/api'
+import {
+  importExportApi,
+  accountApi,
+  backgroundApi,
+  danbooruConfigApi,
+  gelbooruConfigApi,
+  dataSourceApi,
+} from '@/lib/api'
+import type { ImportProgress, DataSource, DataSourceSettings } from '@/lib/api'
 
 export default function SettingsPage() {
   const [exportLoading, setExportLoading] = useState(false)
@@ -51,6 +59,17 @@ export default function SettingsPage() {
   const [danbooruMaskedKey, setDanbooruMaskedKey] = useState('')
   const [hasDanbooruConfig, setHasDanbooruConfig] = useState(false)
   const [showDanbooruApiKey, setShowDanbooruApiKey] = useState(false)
+
+  // 数据来源与 Gelbooru API 配置状态
+  const [sourceLoading, setSourceLoading] = useState(false)
+  const [sourceInfo, setSourceInfo] = useState<DataSourceSettings | null>(null)
+  const [gelbooruLoading, setGelbooruLoading] = useState(false)
+  const [gelbooruTesting, setGelbooruTesting] = useState(false)
+  const [gelbooruUserId, setGelbooruUserId] = useState('')
+  const [gelbooruApiKey, setGelbooruApiKey] = useState('')
+  const [gelbooruMaskedKey, setGelbooruMaskedKey] = useState('')
+  const [hasGelbooruConfig, setHasGelbooruConfig] = useState(false)
+  const [showGelbooruApiKey, setShowGelbooruApiKey] = useState(false)
 
   const jsonFileRef = useRef<HTMLInputElement>(null)
   const bgFileRef = useRef<HTMLInputElement>(null)
@@ -89,6 +108,26 @@ export default function SettingsPage() {
       }
     }
     fetchDanbooruConfig()
+  }, [])
+
+  // 获取数据来源与 Gelbooru API 配置
+  useEffect(() => {
+    const fetchSourceInfo = async () => {
+      const res = await dataSourceApi.get()
+      if (res.success && res.data) {
+        setSourceInfo(res.data)
+      }
+    }
+    const fetchGelbooruConfig = async () => {
+      const res = await gelbooruConfigApi.get()
+      if (res.success && res.data) {
+        setGelbooruUserId(res.data.user_id)
+        setGelbooruMaskedKey(res.data.api_key_masked)
+        setHasGelbooruConfig(res.data.has_config)
+      }
+    }
+    fetchSourceInfo()
+    fetchGelbooruConfig()
   }, [])
 
   const handleExportJson = async () => {
@@ -322,6 +361,126 @@ export default function SettingsPage() {
     }
   }
 
+  // 切换数据来源（不会触发重新抓取）
+  const handleSelectSource = async (source: DataSource) => {
+    if (sourceLoading || sourceInfo?.source === source) return
+
+    setSourceLoading(true)
+    setMessage(null)
+    try {
+      const res = await dataSourceApi.update(source)
+      if (res.success && res.data) {
+        setSourceInfo(res.data)
+        if (res.data.warning) {
+          setMessage({ type: 'error', text: res.data.warning })
+        } else {
+          setMessage({
+            type: 'success',
+            text: `已切换到 ${source === 'gelbooru' ? 'Gelbooru' : 'Danbooru'} 数据源，之后抓取将使用该站点`,
+          })
+        }
+      } else {
+        setMessage({ type: 'error', text: res.error || '切换失败' })
+      }
+    } catch (error) {
+      console.error('Update data source failed:', error)
+      setMessage({ type: 'error', text: '切换失败' })
+    } finally {
+      setSourceLoading(false)
+    }
+  }
+
+  // 处理 Gelbooru 配置更新
+  const handleUpdateGelbooruConfig = async () => {
+    if (!gelbooruUserId.trim() || !gelbooruApiKey.trim()) {
+      setMessage({ type: 'error', text: '请填写 Gelbooru 的 User ID 与 API Key' })
+      return
+    }
+
+    setGelbooruLoading(true)
+    setMessage(null)
+    try {
+      const res = await gelbooruConfigApi.update({
+        user_id: gelbooruUserId.trim(),
+        api_key: gelbooruApiKey.trim(),
+      })
+      if (res.success) {
+        setMessage({ type: 'success', text: res.message || 'Gelbooru API 配置已保存' })
+        setHasGelbooruConfig(true)
+        setGelbooruApiKey('')
+        const [configRes, sourceRes] = await Promise.all([
+          gelbooruConfigApi.get(),
+          dataSourceApi.get(),
+        ])
+        if (configRes.success && configRes.data) {
+          setGelbooruMaskedKey(configRes.data.api_key_masked)
+        }
+        if (sourceRes.success && sourceRes.data) {
+          setSourceInfo(sourceRes.data)
+        }
+      } else {
+        setMessage({ type: 'error', text: res.error || '保存失败' })
+      }
+    } catch (error) {
+      console.error('Update Gelbooru config failed:', error)
+      setMessage({ type: 'error', text: '保存失败' })
+    } finally {
+      setGelbooruLoading(false)
+    }
+  }
+
+  // 处理清除 Gelbooru 配置
+  const handleClearGelbooruConfig = async () => {
+    setGelbooruLoading(true)
+    setMessage(null)
+    try {
+      const res = await gelbooruConfigApi.clear()
+      if (res.success) {
+        setGelbooruUserId('')
+        setGelbooruApiKey('')
+        setGelbooruMaskedKey('')
+        setHasGelbooruConfig(false)
+        setMessage({ type: 'success', text: res.message || 'Gelbooru API 配置已清除' })
+        const sourceRes = await dataSourceApi.get()
+        if (sourceRes.success && sourceRes.data) {
+          setSourceInfo(sourceRes.data)
+        }
+      } else {
+        setMessage({ type: 'error', text: res.error || '清除失败' })
+      }
+    } catch (error) {
+      console.error('Clear Gelbooru config failed:', error)
+      setMessage({ type: 'error', text: '清除失败' })
+    } finally {
+      setGelbooruLoading(false)
+    }
+  }
+
+  // 测试 Gelbooru 凭据是否可用
+  const handleTestGelbooru = async () => {
+    setGelbooruTesting(true)
+    setMessage(null)
+    try {
+      const res = await gelbooruConfigApi.test()
+      if (res.success && res.data) {
+        const count = res.data.sample_count
+        setMessage({
+          type: res.data.ok ? 'success' : 'error',
+          text: res.data.ok
+            ? `连接成功：测试标签 ${res.data.sample_tag || ''} 共 ${count ?? '?'} 个作品`
+            : res.data.message || '连接失败',
+        })
+      } else {
+        setMessage({ type: 'error', text: res.error || '连接失败' })
+      }
+    } catch (error) {
+      console.error('Test Gelbooru config failed:', error)
+      setMessage({ type: 'error', text: '连接失败' })
+    } finally {
+      setGelbooruTesting(false)
+    }
+  }
+
   return (
     <div className="flex-1 flex flex-col h-full">
       {/* 顶部标题栏 */}
@@ -473,6 +632,70 @@ export default function SettingsPage() {
             </CardContent>
           </Card>
 
+          {/* 数据来源 */}
+          <div className="flex items-center gap-2 pt-4">
+            <h2 className="text-lg font-medium text-foreground">数据来源</h2>
+            <span className="text-sm text-muted-foreground">· 抓取作品数据时使用的站点</span>
+          </div>
+
+          <Card className="bg-card/80 backdrop-blur-sm border-border/50">
+            <CardHeader className="pb-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-emerald-500/10">
+                  <Database className="h-5 w-5 text-emerald-500" />
+                </div>
+                <div>
+                  <CardTitle className="text-base">抓取来源</CardTitle>
+                  <CardDescription className="text-xs mt-0.5">
+                    切换后立即生效，不会自动重新抓取已有数据
+                  </CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {([
+                  {
+                    key: 'danbooru' as DataSource,
+                    title: 'Danbooru',
+                    desc: hasDanbooruConfig ? '已配置 API Key' : '匿名访问（可选配置 API Key）',
+                  },
+                  {
+                    key: 'gelbooru' as DataSource,
+                    title: 'Gelbooru',
+                    desc: hasGelbooruConfig ? '已配置 API 凭据' : '需要 User ID + API Key',
+                  },
+                ]).map((option) => {
+                  const active = (sourceInfo?.source || 'danbooru') === option.key
+                  return (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() => handleSelectSource(option.key)}
+                      disabled={sourceLoading}
+                      className={`text-left rounded-lg border p-3 transition-colors disabled:opacity-60 ${
+                        active
+                          ? 'border-primary bg-primary/5'
+                          : 'border-border/60 hover:border-primary/40'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium">{option.title}</span>
+                        {active && <CheckCircle2 className="h-4 w-4 text-primary" />}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">{option.desc}</p>
+                    </button>
+                  )
+                })}
+              </div>
+              {sourceInfo && !sourceInfo.ready && (
+                <p className="text-xs text-destructive">
+                  当前来源还缺少 API 凭据，抓取会失败，请在下方填写对应站点的凭据。
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
           {/* Danbooru API 配置 */}
           <div className="flex items-center gap-2 pt-4">
             <h2 className="text-lg font-medium text-foreground">Danbooru API</h2>
@@ -559,6 +782,118 @@ export default function SettingsPage() {
                   <Button
                     onClick={handleClearDanbooruConfig}
                     disabled={danbooruLoading}
+                    variant="outline"
+                    className="gap-2 text-destructive hover:text-destructive"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    清除
+                  </Button>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Gelbooru API 配置 */}
+          <div className="flex items-center gap-2 pt-4">
+            <h2 className="text-lg font-medium text-foreground">Gelbooru API</h2>
+            <span className="text-sm text-muted-foreground">· 使用 Gelbooru 作为数据来源时必填</span>
+          </div>
+
+          <Card className="bg-card/80 backdrop-blur-sm border-border/50">
+            <CardHeader className="pb-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-pink-500/10">
+                  <Key className="h-5 w-5 text-pink-500" />
+                </div>
+                <div>
+                  <CardTitle className="text-base">API 认证</CardTitle>
+                  <CardDescription className="text-xs mt-0.5">
+                    {hasGelbooruConfig ? '已配置 User ID 与 API Key' : '未配置（Gelbooru 抓取必须配置）'}
+                  </CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* User ID */}
+              <div className="space-y-2">
+                <Label htmlFor="gelbooru-userid" className="text-sm flex items-center gap-2">
+                  <User className="h-3.5 w-3.5" />
+                  User ID
+                </Label>
+                <Input
+                  id="gelbooru-userid"
+                  type="text"
+                  value={gelbooruUserId}
+                  onChange={(e) => setGelbooruUserId(e.target.value)}
+                  placeholder="输入 Gelbooru 用户 ID"
+                />
+              </div>
+
+              {/* API Key */}
+              <div className="space-y-2">
+                <Label htmlFor="gelbooru-apikey" className="text-sm flex items-center gap-2">
+                  <Key className="h-3.5 w-3.5" />
+                  API Key
+                  {gelbooruMaskedKey && (
+                    <span className="text-muted-foreground font-mono text-xs">
+                      (当前: {gelbooruMaskedKey})
+                    </span>
+                  )}
+                </Label>
+                <div className="relative">
+                  <Input
+                    id="gelbooru-apikey"
+                    type={showGelbooruApiKey ? 'text' : 'password'}
+                    value={gelbooruApiKey}
+                    onChange={(e) => setGelbooruApiKey(e.target.value)}
+                    placeholder={hasGelbooruConfig ? '输入新的 API Key（留空保持不变）' : '输入 API Key'}
+                    className="pr-10"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowGelbooruApiKey(!showGelbooruApiKey)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {showGelbooruApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  在 Gelbooru 账号设置页生成：Account → Options → API Access Credentials
+                </p>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  onClick={handleUpdateGelbooruConfig}
+                  disabled={gelbooruLoading}
+                  className="flex-1 gap-2 min-w-[140px]"
+                >
+                  {gelbooruLoading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="h-4 w-4" />
+                  )}
+                  保存配置
+                </Button>
+                {hasGelbooruConfig && (
+                  <Button
+                    onClick={handleTestGelbooru}
+                    disabled={gelbooruTesting}
+                    variant="secondary"
+                    className="gap-2"
+                  >
+                    {gelbooruTesting ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="h-4 w-4" />
+                    )}
+                    测试连接
+                  </Button>
+                )}
+                {hasGelbooruConfig && (
+                  <Button
+                    onClick={handleClearGelbooruConfig}
+                    disabled={gelbooruLoading}
                     variant="outline"
                     className="gap-2 text-destructive hover:text-destructive"
                   >

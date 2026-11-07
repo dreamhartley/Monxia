@@ -13,40 +13,29 @@ Cloudflare 拦截（403 challenge），只有真实页面里执行的 fetch 才�
 fetch 完成。
 
 用法（异步）：
-    async with DanbooruClient(concurrency=5) as client:
-        count = await client.get_post_count("artist_name", auth_header)
-        posts = await client.get_posts("artist_name", limit=10, auth_header=auth_header)
+    async with DanbooruClient(username=..., api_key=..., concurrency=5) as client:
+        count = await client.get_post_count("artist_name")
+        posts = await client.get_posts("artist_name", limit=10)
 """
 import asyncio
 import base64
 import json
 import logging
 import os
-from io import BytesIO
-from pathlib import Path
 from typing import Dict, List, Optional, Union
 from urllib.parse import urlencode
 
-from PIL import Image
-
-# 数据目录（支持通过环境变量配置，默认为 backend 目录）
-DATA_DIR = Path(os.environ.get('DATA_DIR', Path(__file__).parent))
-
-# 图片存储目录
-IMAGES_DIR = DATA_DIR / 'artist_images'
-IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-
-# 登录背景图存储目录
-BACKGROUNDS_DIR = DATA_DIR / 'backgrounds'
-BACKGROUNDS_DIR.mkdir(parents=True, exist_ok=True)
-
-DANBOORU_API_BASE = "https://danbooru.donmai.us"
+from booru_base import (
+    BooruClientBase,
+    BooruAuthError,
+    BACKGROUNDS_DIR,  # noqa: F401  (兼容旧的导入路径)
+    IMAGES_DIR,       # noqa: F401
+)
 
 # 是否无头运行；调试时可设 DANBOORU_HEADLESS=0 观察验证过程
 BROWSER_HEADLESS = os.environ.get('DANBOORU_HEADLESS', '1') not in ('0', 'false', 'False')
 
-# 单张图片最大体积（字节），防止超大原图经 base64 传输撑爆内存
-MAX_IMAGE_BYTES = 40 * 1024 * 1024
+DANBOORU_API_BASE = "https://danbooru.donmai.us"
 
 # Playwright 默认的 headless UA 带 HeadlessChrome 字样、navigator.webdriver 为 true，
 # 是 Cloudflare 识别自动化浏览器的关键信号。UA 里的版本号会在启动时用浏览器实际
@@ -110,12 +99,16 @@ def get_auth_header(username: str, api_key: str) -> Dict[str, str]:
     return {"Authorization": f"Basic {encoded}"}
 
 
-class DanbooruClient:
+class DanbooruClient(BooruClientBase):
     """Playwright 驱动的 Danbooru API 客户端，一个实例对应一次抓取任务。"""
 
-    def __init__(self, headless: bool = True, concurrency: int = 5):
+    source = 'danbooru'
+
+    def __init__(self, headless: bool = True, concurrency: int = 5,
+                 username: str = '', api_key: str = ''):
+        super().__init__(concurrency=concurrency)
         self.headless = headless
-        self.concurrency = max(1, concurrency)
+        self.auth_header = get_auth_header(username, api_key)
         self._playwright = None
         self._browser = None
         self._context = None
@@ -126,13 +119,6 @@ class DanbooruClient:
     @property
     def is_ready(self) -> bool:
         return self._page_queue is not None
-
-    async def __aenter__(self) -> "DanbooruClient":
-        await self.start()
-        return self
-
-    async def __aexit__(self, *exc) -> None:
-        await self.close()
 
     # -------------------------------
     # 生命周期
@@ -249,8 +235,7 @@ class DanbooruClient:
         if params:
             url = f"{url}?{urlencode(params)}"
         headers = dict(DEFAULT_HEADERS)
-        if auth_header:
-            headers.update(auth_header)
+        headers.update(auth_header or self.auth_header or {})
 
         page = await self._acquire_page()
         try:
@@ -275,84 +260,59 @@ class DanbooruClient:
         finally:
             await self._release_page(page)
 
-    async def get_post_count(
-        self,
-        artist_tag: str,
-        auth_header: Optional[Dict[str, str]] = None,
-    ) -> Optional[int]:
+    async def get_post_count(self, artist_tag: str) -> Optional[int]:
         """获取画师作品数量: GET /counts/posts.json?tags={artist_tag}"""
-        data = await self.get_json("/counts/posts.json", {"tags": artist_tag}, auth_header)
+        data = await self.get_json("/counts/posts.json", {"tags": artist_tag})
         if isinstance(data, dict):
             return data.get("counts", {}).get("posts")
         return None
 
-    async def get_posts(
-        self,
-        artist_tag: str,
-        limit: int = 10,
-        auth_header: Optional[Dict[str, str]] = None,
-    ) -> List[Dict]:
-        """获取帖子列表: GET /posts.json?tags={artist_tag}&limit={limit}"""
-        data = await self.get_json(
-            "/posts.json", {"tags": artist_tag, "limit": limit}, auth_header
-        )
-        return data if isinstance(data, list) else []
+    async def get_posts(self, artist_tag: str, limit: int = 10) -> List[Dict]:
+        """
+        获取帖子列表: GET /posts.json?tags={artist_tag}&limit={limit}
+        返回统一结构: {'id', 'image_url', 'preview_url', 'tags'}
+        """
+        data = await self.get_json("/posts.json", {"tags": artist_tag, "limit": limit})
+        posts = data if isinstance(data, list) else []
+        normalized = []
+        for post in posts:
+            if not isinstance(post, dict):
+                continue
+            image_url = post.get('large_file_url') or post.get('file_url') or ''
+            if not image_url:
+                continue
+            normalized.append({
+                'id': post.get('id'),
+                'image_url': image_url,
+                'preview_url': post.get('preview_file_url') or image_url,
+                'tags': post.get('tag_string', ''),
+            })
+        return normalized
 
     # -------------------------------
     # 图片下载
     # -------------------------------
 
-    async def download_image(self, url: str, artist_identifier: str, timeout: int = 30) -> Optional[str]:
-        """
-        通过页内 fetch 下载图片到本地，转换为 JPEG 格式
-        返回: 本地文件名(例如 "uuid.jpg") 或 None
-        """
+    async def _fetch_bytes(self, url: str, timeout: int = 30) -> Optional[bytes]:
+        """通过页内 fetch 下载图片字节（Cloudflare 拦截时重过验证后重试一次）"""
         page = await self._acquire_page()
         try:
-            image_content = None
             for attempt in range(2):
-                result = await page.evaluate(
-                    _FETCH_IMAGE_SCRIPT,
-                    [url, timeout * 1000],
-                )
+                result = await page.evaluate(_FETCH_IMAGE_SCRIPT, [url, timeout * 1000])
                 if result.get('status') == 200 and result.get('b64'):
-                    image_content = base64.b64decode(result['b64'])
-                    if len(image_content) > MAX_IMAGE_BYTES:
-                        logging.warning(f"图片超过体积上限 {MAX_IMAGE_BYTES // 1024 // 1024}MB，已跳过: {url[:80]}...")
-                        return None
-                    break
+                    return base64.b64decode(result['b64'])
                 if self._is_challenge_result(result):
                     logging.warning(f"图片下载被 Cloudflare 拦截，重过验证后重试: {url[:80]}...")
                     await self._solve_challenge(self._warmup_page, reason="图片重试")
                     continue
                 logging.warning(f"图片下载失败: HTTP {result.get('status')} {url[:80]}...")
                 return None
-            if image_content is None:
-                return None
+            return None
         finally:
             await self._release_page(page)
 
-        # 使用 Pillow 处理图片：转换为 JPEG 格式，质量 80%
-        try:
-            with Image.open(BytesIO(image_content)) as img:
-                # 转换为 RGB 模式（处理 PNG 透明通道等）
-                if img.mode in ('RGBA', 'P', 'LA'):
-                    img = img.convert('RGB')
 
-                # 生成文件名（统一使用 .jpg 后缀）
-                filename = f"{artist_identifier}.jpg"
-                filepath = IMAGES_DIR / filename
-
-                # 如果已存在同标识符的其他格式图片，先删除
-                for old_file in IMAGES_DIR.glob(f"{artist_identifier}.*"):
-                    if old_file.name != filename:
-                        old_file.unlink()
-                        logging.info(f"删除旧图片: {old_file.name}")
-
-                # 保存为 JPEG
-                img.save(filepath, 'JPEG', quality=80, optimize=True)
-                logging.info(f"图片已转换并保存为 JPEG: {filename}")
-                return filename
-        except Exception as e:
-            logging.error(f"图片处理失败: {e}")
-            return None
+__all__ = [
+    'DanbooruClient', 'get_auth_header', 'BROWSER_HEADLESS',
+    'DANBOORU_API_BASE', 'IMAGES_DIR', 'BACKGROUNDS_DIR', 'BooruAuthError',
+]

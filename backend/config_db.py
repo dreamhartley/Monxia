@@ -68,6 +68,29 @@ def init_config_db():
             )
         """)
 
+        # 创建 Gelbooru API 配置表（Gelbooru 的 API 必须带 user_id + api_key）
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS gelbooru_config (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                user_id TEXT DEFAULT '',
+                api_key TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 创建全局设置表（数据来源等）
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                data_source TEXT DEFAULT 'danbooru',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 写入默认数据来源
+        cursor.execute("INSERT OR IGNORE INTO app_settings (id, data_source) VALUES (1, 'danbooru')")
+
         # 检查是否已有配置，如果没有则创建默认配置
         cursor.execute("SELECT id FROM admin_config WHERE id = 1")
         if not cursor.fetchone():
@@ -258,6 +281,92 @@ def clear_danbooru_config() -> Dict[str, Any]:
     清除 Danbooru API 配置
     """
     return update_danbooru_config('', '')
+
+
+# -------------------------------
+# 数据来源设置
+# -------------------------------
+
+def get_data_source() -> str:
+    """
+    获取当前数据来源：'danbooru' 或 'gelbooru'
+    配置缺失时回落到 danbooru。
+    """
+    with get_config_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT data_source FROM app_settings WHERE id = 1")
+        row = cursor.fetchone()
+        if row and row['data_source'] in ('danbooru', 'gelbooru'):
+            return row['data_source']
+        return 'danbooru'
+
+
+def update_data_source(source: str) -> Dict[str, Any]:
+    """更新数据来源"""
+    if source not in ('danbooru', 'gelbooru'):
+        return {"success": False, "error": "不支持的数据来源"}
+
+    with get_config_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM app_settings WHERE id = 1")
+        if cursor.fetchone():
+            cursor.execute("""
+                UPDATE app_settings
+                SET data_source = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = 1
+            """, (source,))
+        else:
+            cursor.execute("INSERT INTO app_settings (id, data_source) VALUES (1, ?)", (source,))
+        conn.commit()
+
+    return {"success": True, "message": "数据来源已更新", "data_source": source}
+
+
+# -------------------------------
+# Gelbooru API 配置管理
+# -------------------------------
+
+def get_gelbooru_config() -> Dict[str, Any]:
+    """
+    获取 Gelbooru API 配置
+    返回: {'user_id': str, 'api_key': str}
+    """
+    with get_config_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, api_key FROM gelbooru_config WHERE id = 1")
+        row = cursor.fetchone()
+        if row:
+            return {
+                'user_id': row['user_id'] or '',
+                'api_key': row['api_key'] or ''
+            }
+        return {'user_id': '', 'api_key': ''}
+
+
+def update_gelbooru_config(user_id: str, api_key: str) -> Dict[str, Any]:
+    """更新 Gelbooru API 配置"""
+    with get_config_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM gelbooru_config WHERE id = 1")
+        if cursor.fetchone():
+            cursor.execute("""
+                UPDATE gelbooru_config
+                SET user_id = ?, api_key = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = 1
+            """, (user_id or '', api_key or ''))
+        else:
+            cursor.execute("""
+                INSERT INTO gelbooru_config (id, user_id, api_key)
+                VALUES (1, ?, ?)
+            """, (user_id or '', api_key or ''))
+        conn.commit()
+
+    return {"success": True, "message": "Gelbooru API 配置已更新"}
+
+
+def clear_gelbooru_config() -> Dict[str, Any]:
+    """清除 Gelbooru API 配置"""
+    return update_gelbooru_config('', '')
 
 
 if __name__ == "__main__":
