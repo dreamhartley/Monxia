@@ -102,6 +102,7 @@ export interface Artist {
   name_noob: string
   name_nai: string
   danbooru_link: string
+  gelbooru_link: string
   post_count: number | null
   notes: string
   image_example: string
@@ -118,6 +119,7 @@ export interface CreateArtistData {
   name_noob?: string
   name_nai?: string
   danbooru_link?: string
+  gelbooru_link?: string
   post_count?: number
   notes?: string
   skip_danbooru?: boolean
@@ -161,6 +163,7 @@ export const artistApi = {
 export interface AutoCompleteProgress {
   type: 'start' | 'progress' | 'phase' | 'complete' | 'error'
   phase?: 'names' | 'fetch'
+  source?: DataSource
   current?: number
   total?: number
   artist_name?: string
@@ -173,12 +176,12 @@ export interface AutoCompleteProgress {
 }
 
 export const toolsApi = {
-  autoComplete: (name_noob: string, name_nai: string, danbooru_link: string) =>
-    request<{ name_noob: string; name_nai: string; danbooru_link: string }>(
+  autoComplete: (name_noob: string, name_nai: string, danbooru_link: string, gelbooru_link = '') =>
+    request<{ name_noob: string; name_nai: string; danbooru_link: string; gelbooru_link: string }>(
       '/tools/auto-complete',
       {
         method: 'POST',
-        body: JSON.stringify({ name_noob, name_nai, danbooru_link }),
+        body: JSON.stringify({ name_noob, name_nai, danbooru_link, gelbooru_link }),
       }
     ),
 
@@ -398,5 +401,68 @@ export const danbooruConfigApi = {
   clear: () =>
     request<{ message: string }>('/settings/danbooru', {
       method: 'DELETE',
+    }),
+}
+
+// 数据来源相关
+export type DataSource = 'danbooru' | 'gelbooru'
+
+export interface DataSourceSettings {
+  source: DataSource
+  danbooru: {
+    configured: boolean
+    username: string
+    api_key_masked: string
+  }
+  gelbooru: {
+    configured: boolean
+    user_id: string
+    api_key_masked: string
+  }
+  ready: boolean
+  warning?: string
+}
+
+export const dataSourceApi = {
+  get: () => request<DataSourceSettings>('/settings/data-source'),
+
+  update: (source: DataSource) =>
+    request<DataSourceSettings>('/settings/data-source', {
+      method: 'PUT',
+      body: JSON.stringify({ source }),
+    }),
+}
+
+// Gelbooru API 配置相关
+export interface GelbooruConfig {
+  user_id: string
+  api_key_masked: string
+  has_config: boolean
+}
+
+export interface GelbooruTestResult {
+  ok: boolean
+  message: string
+  sample_tag?: string
+  sample_count?: number
+}
+
+export const gelbooruConfigApi = {
+  get: () => request<GelbooruConfig>('/settings/gelbooru'),
+
+  update: (data: { user_id: string; api_key: string }) =>
+    request<{ message: string }>('/settings/gelbooru', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  clear: () =>
+    request<{ message: string }>('/settings/gelbooru', {
+      method: 'DELETE',
+    }),
+
+  test: () =>
+    request<GelbooruTestResult>('/settings/gelbooru/test', {
+      method: 'POST',
     }),
 }

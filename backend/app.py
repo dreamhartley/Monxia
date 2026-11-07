@@ -18,7 +18,9 @@ logging.basicConfig(level=logging.INFO)
 from config_db import (
     init_config_db, get_secret_key, get_admin_username,
     verify_password, update_admin_credentials,
-    get_danbooru_config, update_danbooru_config
+    get_danbooru_config, update_danbooru_config,
+    get_data_source, update_data_source,
+    get_gelbooru_config, update_gelbooru_config, clear_gelbooru_config,
 )
 
 # 初始化配置数据库
@@ -31,10 +33,12 @@ from database import (
     get_all_artists_for_dedup, batch_create_artists, batch_update_artists
 )
 from utils import (
-    auto_complete_names, format_noob, format_nai,
-    generate_danbooru_link, fetch_post_counts_batch,
+    auto_complete_artist,
+    fetch_post_counts_batch, fetch_post_counts_streaming,
     IMAGES_DIR, BACKGROUNDS_DIR
 )
+from booru_base import BooruConfigError, BooruError
+from booru_links import normalize_source, sync_links, SOURCE_DANBOORU, SOURCE_GELBOORU
 
 # 前端静态文件目录
 FRONTEND_DIST_DIR = Path(__file__).parent / 'dist'
@@ -190,13 +194,7 @@ def api_get_danbooru_config():
     try:
         config = get_danbooru_config()
         # 隐藏 API Key 的大部分内容
-        masked_key = ''
-        if config.get('api_key'):
-            key = config['api_key']
-            if len(key) > 8:
-                masked_key = key[:4] + '*' * (len(key) - 8) + key[-4:]
-            else:
-                masked_key = '*' * len(key)
+        masked_key = _mask_secret(config.get('api_key', ''))
 
         return jsonify({
             "success": True,
@@ -241,6 +239,163 @@ def api_clear_danbooru_config():
     except Exception as e:
         logging.error(f"清除 Danbooru 配置失败: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+# -------------------------------
+# 数据来源与 Gelbooru API 配置
+# -------------------------------
+
+def _mask_secret(value: str) -> str:
+    """对 API Key 之类的敏感串打码（长度固定，避免超长 Key 撑破布局）"""
+    if not value:
+        return ''
+    if len(value) <= 12:
+        return '*' * len(value)
+    stars = '*' * min(len(value) - 8, 8)
+    return f"{value[:4]}{stars}{value[-4:]}"
+
+
+def _build_source_payload() -> dict:
+    """组装数据来源 + 两边凭据状态"""
+    source = get_data_source()
+    danbooru = get_danbooru_config() or {}
+    gelbooru = get_gelbooru_config() or {}
+
+    danbooru_configured = bool(danbooru.get('username') and danbooru.get('api_key'))
+    gelbooru_configured = bool(gelbooru.get('user_id') and gelbooru.get('api_key'))
+
+    return {
+        "source": source,
+        "danbooru": {
+            "configured": danbooru_configured,
+            "username": danbooru.get('username', ''),
+            "api_key_masked": _mask_secret(danbooru.get('api_key', '')),
+        },
+        "gelbooru": {
+            "configured": gelbooru_configured,
+            "user_id": gelbooru.get('user_id', ''),
+            "api_key_masked": _mask_secret(gelbooru.get('api_key', '')),
+        },
+        # 当前来源是否可用：Danbooru 允许匿名抓取；Gelbooru 必须配置凭据
+        "ready": True if source == SOURCE_DANBOORU else gelbooru_configured,
+    }
+
+
+@app.route('/api/settings/data-source', methods=['GET'])
+@login_required
+def api_get_data_source():
+    """获取当前数据来源及两边凭据状态"""
+    try:
+        return jsonify({"success": True, "data": _build_source_payload()})
+    except Exception as e:
+        logging.error(f"获取数据来源失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/settings/data-source', methods=['PUT'])
+@login_required
+def api_update_data_source():
+    """切换数据来源（不触发重新抓取）"""
+    try:
+        data = request.json or {}
+        source = normalize_source(data.get('source'))
+        if data.get('source') and source != data.get('source').strip().lower():
+            return jsonify({"success": False, "error": "不支持的数据来源"}), 400
+
+        result = update_data_source(source)
+        if not result.get('success'):
+            return jsonify(result), 400
+
+        payload = _build_source_payload()
+        if not payload['ready']:
+            payload['warning'] = "当前数据来源还缺少 API 凭据，抓取会失败，请先填写"
+        return jsonify({"success": True, "message": result.get('message', '数据来源已更新'), "data": payload})
+    except Exception as e:
+        logging.error(f"更新数据来源失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/settings/gelbooru', methods=['GET'])
+@login_required
+def api_get_gelbooru_config():
+    """获取 Gelbooru API 配置"""
+    try:
+        config = get_gelbooru_config() or {}
+        return jsonify({
+            "success": True,
+            "data": {
+                "user_id": config.get('user_id', ''),
+                "api_key_masked": _mask_secret(config.get('api_key', '')),
+                "has_config": bool(config.get('user_id') and config.get('api_key')),
+            }
+        })
+    except Exception as e:
+        logging.error(f"获取 Gelbooru 配置失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/settings/gelbooru', methods=['POST'])
+@login_required
+def api_update_gelbooru_config():
+    """更新 Gelbooru API 配置"""
+    try:
+        data = request.json or {}
+        user_id = str(data.get('user_id', '')).strip()
+        api_key = str(data.get('api_key', '')).strip()
+
+        if not user_id or not api_key:
+            return jsonify({"success": False, "error": "User ID 与 API Key 都需要填写"}), 400
+
+        result = update_gelbooru_config(user_id, api_key)
+        if not result.get('success'):
+            return jsonify(result), 400
+        return jsonify(result)
+    except Exception as e:
+        logging.error(f"更新 Gelbooru 配置失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/settings/gelbooru', methods=['DELETE'])
+@login_required
+def api_clear_gelbooru_config():
+    """清除 Gelbooru API 配置"""
+    try:
+        clear_gelbooru_config()
+        return jsonify({"success": True, "message": "Gelbooru API 配置已清除"})
+    except Exception as e:
+        logging.error(f"清除 Gelbooru 配置失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/settings/gelbooru/test', methods=['POST'])
+@login_required
+def api_test_gelbooru_config():
+    """用已保存的凭据做一次真实请求，验证是否可用"""
+    import asyncio
+
+    from gelbooru_client import GelbooruClient
+
+    config = get_gelbooru_config() or {}
+    if not config.get('user_id') or not config.get('api_key'):
+        return jsonify({"success": False, "error": "尚未配置 Gelbooru 凭据"}), 400
+
+    async def _probe():
+        client = GelbooruClient(config['user_id'], config['api_key'], concurrency=1)
+        await client.start()
+        try:
+            return await client.check_credentials()
+        finally:
+            await client.close()
+
+    try:
+        result = asyncio.run(_probe())
+        return jsonify({"success": True, "data": result})
+    except BooruError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        logging.error(f"测试 Gelbooru 凭据失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 
 # -------------------------------
 # 分类管理 API
@@ -369,12 +524,15 @@ def api_create_artist():
             return jsonify({"success": False, "error": "画师名称（NOOB或NAI格式）至少需要填写一个"}), 400
 
         danbooru_link = data.get('danbooru_link', '').strip()
+        gelbooru_link = data.get('gelbooru_link', '').strip()
         notes = data.get('notes', '').strip()
         image_example = data.get('image_example', '').strip()
         skip_danbooru = data.get('skip_danbooru', False)
 
-        # 自动补全名称
-        name_noob, name_nai, danbooru_link = auto_complete_names(name_noob, name_nai, danbooru_link)
+        # 自动补全名称与两个站点的链接
+        name_noob, name_nai, danbooru_link, gelbooru_link = auto_complete_artist(
+            name_noob, name_nai, danbooru_link, gelbooru_link
+        )
 
         # 检查重复
         existing_artist = check_artist_exists(name_noob, name_nai, danbooru_link)
@@ -391,6 +549,7 @@ def api_create_artist():
             name_noob=name_noob,
             name_nai=name_nai,
             danbooru_link=danbooru_link,
+            gelbooru_link=gelbooru_link,
             notes=notes,
             image_example=image_example,
             skip_danbooru=skip_danbooru
@@ -416,12 +575,16 @@ def api_update_artist(artist_id):
                 name_noob = data.get('name_noob', artist.get('name_noob', ''))
                 name_nai = data.get('name_nai', artist.get('name_nai', ''))
                 danbooru_link = data.get('danbooru_link', artist.get('danbooru_link', ''))
+                gelbooru_link = data.get('gelbooru_link', artist.get('gelbooru_link', ''))
 
-                name_noob, name_nai, danbooru_link = auto_complete_names(name_noob, name_nai, danbooru_link)
+                name_noob, name_nai, danbooru_link, gelbooru_link = auto_complete_artist(
+                    name_noob, name_nai, danbooru_link, gelbooru_link
+                )
 
                 data['name_noob'] = name_noob
                 data['name_nai'] = name_nai
                 data['danbooru_link'] = danbooru_link
+                data['gelbooru_link'] = gelbooru_link
 
         # 移除不需要的字段
         data.pop('auto_complete', None)
@@ -541,21 +704,25 @@ def api_upload_artist_image(artist_id):
 @app.route('/api/tools/auto-complete', methods=['POST'])
 @login_required
 def api_auto_complete():
-    """自动补全画师名称"""
+    """自动补全画师名称与两个站点的链接"""
     try:
         data = request.json
         name_noob = data.get('name_noob', '')
         name_nai = data.get('name_nai', '')
         danbooru_link = data.get('danbooru_link', '')
+        gelbooru_link = data.get('gelbooru_link', '')
 
-        name_noob, name_nai, danbooru_link = auto_complete_names(name_noob, name_nai, danbooru_link)
+        name_noob, name_nai, danbooru_link, gelbooru_link = auto_complete_artist(
+            name_noob, name_nai, danbooru_link, gelbooru_link
+        )
 
         return jsonify({
             "success": True,
             "data": {
                 "name_noob": name_noob,
                 "name_nai": name_nai,
-                "danbooru_link": danbooru_link
+                "danbooru_link": danbooru_link,
+                "gelbooru_link": gelbooru_link,
             }
         })
     except Exception as e:
@@ -578,50 +745,57 @@ def api_auto_complete_all_stream():
 
     def generate():
         try:
+            source = get_data_source()
             artists = get_all_artists()
             total_artists = len(artists)
             updated_count = 0
 
-            # 发送初始状态
-            yield f"data: {json.dumps({'type': 'start', 'total': total_artists})}\n\n"
+            # 发送初始状态（带上当前数据来源，前端用于文案展示）
+            yield f"data: {json.dumps({'type': 'start', 'total': total_artists, 'source': source})}\n\n"
 
-            # 1. 补全名称和链接
+            # 1. 补全名称和两个站点的链接
             for idx, artist in enumerate(artists):
                 artist_id = artist['id']
                 name_noob = artist.get('name_noob', '')
                 name_nai = artist.get('name_nai', '')
                 danbooru_link = artist.get('danbooru_link', '')
+                gelbooru_link = artist.get('gelbooru_link', '')
                 display_name = get_display_name(artist)
 
-                new_noob, new_nai, new_link = auto_complete_names(name_noob, name_nai, danbooru_link)
+                new_noob, new_nai, new_danbooru, new_gelbooru = auto_complete_artist(
+                    name_noob, name_nai, danbooru_link, gelbooru_link
+                )
 
                 # 检查是否有变更
                 if (new_noob != name_noob or
                     new_nai != name_nai or
-                    new_link != danbooru_link):
+                    new_danbooru != danbooru_link or
+                    new_gelbooru != gelbooru_link):
 
                     update_artist(
                         artist_id,
                         name_noob=new_noob,
                         name_nai=new_nai,
-                        danbooru_link=new_link
+                        danbooru_link=new_danbooru,
+                        gelbooru_link=new_gelbooru
                     )
                     updated_count += 1
                     # 更新内存中的对象
                     artist['name_noob'] = new_noob
                     artist['name_nai'] = new_nai
-                    artist['danbooru_link'] = new_link
+                    artist['danbooru_link'] = new_danbooru
+                    artist['gelbooru_link'] = new_gelbooru
 
                 # 发送进度 - 阶段1：名称补全
                 yield f"data: {json.dumps({'type': 'progress', 'phase': 'names', 'current': idx + 1, 'total': total_artists, 'artist_name': display_name, 'updated_count': updated_count})}\n\n"
 
-            # 2. 筛选需要获取作品数据的画师
+            # 2. 筛选需要获取作品数据的画师（按当前数据来源取链接）
             artists_to_fetch = []
             for artist in artists:
                 if artist.get('skip_danbooru'):
                     continue
 
-                link = artist.get('danbooru_link')
+                link = artist.get('gelbooru_link') if source == SOURCE_GELBOORU else artist.get('danbooru_link')
                 if not link:
                     continue
 
@@ -640,12 +814,15 @@ def api_auto_complete_all_stream():
                     artists_to_fetch.append({
                         'id': artist['id'],
                         'uuid': artist.get('uuid'),
-                        'danbooru_link': link,
+                        'name_noob': artist.get('name_noob', ''),
+                        'name_nai': artist.get('name_nai', ''),
+                        'danbooru_link': artist.get('danbooru_link', ''),
+                        'gelbooru_link': artist.get('gelbooru_link', ''),
                         'name': get_display_name(artist)
                     })
 
             # 发送阶段2开始信息
-            yield f"data: {json.dumps({'type': 'phase', 'phase': 'fetch', 'total': len(artists_to_fetch), 'message': f'开始获取 {len(artists_to_fetch)} 个画师的作品数据...'})}\n\n"
+            yield f"data: {json.dumps({'type': 'phase', 'phase': 'fetch', 'total': len(artists_to_fetch), 'source': source, 'message': f'开始从 {source.capitalize()} 获取 {len(artists_to_fetch)} 个画师的作品数据...'})}\n\n"
 
             # 3. 逐个获取作品数据（使用流式版本）
             fetched_count = 0
@@ -653,12 +830,14 @@ def api_auto_complete_all_stream():
             image_failed_artists = []
 
             if artists_to_fetch:
-                from utils import fetch_post_counts_streaming
-
-                for progress in fetch_post_counts_streaming(artists_to_fetch):
+                for progress in fetch_post_counts_streaming(artists_to_fetch, source=source):
                     if progress['type'] == 'progress':
                         # 发送获取进度
                         yield f"data: {json.dumps({'type': 'progress', 'phase': 'fetch', 'current': progress['current'], 'total': progress['total'], 'artist_name': progress['artist_name']})}\n\n"
+                    elif progress['type'] == 'error':
+                        # 凭据/配置错误：立即反馈并结束
+                        yield f"data: {json.dumps({'type': 'error', 'error': progress.get('error', '抓取失败')})}\n\n"
+                        return
                     elif progress['type'] == 'result':
                         artist_id = progress['artist_id']
                         result = progress['result']
@@ -668,17 +847,24 @@ def api_auto_complete_all_stream():
                             update_data['post_count'] = result['post_count']
                         if result.get('example_image'):
                             update_data['image_example'] = result['example_image']
+                        # 链接补全结果一并落库
+                        if result.get('danbooru_link'):
+                            update_data['danbooru_link'] = result['danbooru_link']
+                        if result.get('gelbooru_link'):
+                            update_data['gelbooru_link'] = result['gelbooru_link']
 
                         if update_data:
                             update_artist(artist_id, **update_data)
-                            fetched_count += 1
+                            if result.get('post_count') is not None:
+                                fetched_count += 1
 
                             if result.get('post_count') is not None and not result.get('example_image'):
                                 image_failed_count += 1
                                 image_failed_artists.append(progress['artist_name'])
 
             # 构建最终消息
-            message = f"已自动补全 {updated_count} 个画师的基本信息"
+            source_label = source.capitalize()
+            message = f"已自动补全 {updated_count} 个画师的基本信息（数据来源：{source_label}）"
             if fetched_count > 0:
                 message += f"，并成功获取了 {fetched_count} 个画师的作品数据"
             elif len(artists_to_fetch) > 0:
@@ -688,8 +874,11 @@ def api_auto_complete_all_stream():
                 message += f"（其中 {image_failed_count} 个画师封面获取失败）"
 
             # 发送完成状态
-            yield f"data: {json.dumps({'type': 'complete', 'message': message, 'updated_count': updated_count, 'fetched_count': fetched_count, 'image_failed_count': image_failed_count, 'image_failed_artists': image_failed_artists})}\n\n"
+            yield f"data: {json.dumps({'type': 'complete', 'message': message, 'source': source, 'updated_count': updated_count, 'fetched_count': fetched_count, 'image_failed_count': image_failed_count, 'image_failed_artists': image_failed_artists})}\n\n"
 
+        except BooruConfigError as e:
+            logging.warning(f"一键补全缺少配置: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
         except Exception as e:
             logging.error(f"一键补全失败: {e}")
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
@@ -712,6 +901,7 @@ def api_fetch_post_counts():
             return jsonify({"success": False, "error": "未指定画师ID"}), 400
 
         # 获取画师信息
+        source = get_data_source()
         artists = []
         artist_id_to_name = {}
         for artist_id in artist_ids:
@@ -722,12 +912,15 @@ def api_fetch_post_counts():
                 artists.append({
                     'id': artist['id'],
                     'uuid': artist.get('uuid'),
+                    'name_noob': artist.get('name_noob', ''),
+                    'name_nai': artist.get('name_nai', ''),
                     'danbooru_link': artist.get('danbooru_link', ''),
+                    'gelbooru_link': artist.get('gelbooru_link', ''),
                     'name': name
                 })
 
-        # 批量获取作品数量和示例图
-        results = fetch_post_counts_batch(artists)
+        # 批量获取作品数量和示例图（按当前数据来源）
+        results = fetch_post_counts_batch(artists, source=source)
 
         # 更新数据库并统计结果
         updated_count = 0
@@ -743,10 +936,15 @@ def api_fetch_post_counts():
                     update_data['post_count'] = result['post_count']
                 if result.get('example_image'):
                     update_data['image_example'] = result['example_image']
+                if result.get('danbooru_link'):
+                    update_data['danbooru_link'] = result['danbooru_link']
+                if result.get('gelbooru_link'):
+                    update_data['gelbooru_link'] = result['gelbooru_link']
 
                 if update_data:
                     update_artist(artist_id, **update_data)
-                    updated_count += 1
+                    if result.get('post_count') is not None:
+                        updated_count += 1
 
                     # 检查是否有警告（获取了作品数但没有图片）
                     if result.get('post_count') is not None and not result.get('example_image'):
@@ -760,7 +958,7 @@ def api_fetch_post_counts():
         # 构建响应消息
         messages = []
         if updated_count > 0:
-            messages.append(f"成功获取 {updated_count} 个画师的数据")
+            messages.append(f"成功获取 {updated_count} 个画师的数据（数据来源：{source.capitalize()}）")
         if warnings:
             messages.append(f"警告: {len(warnings)} 个画师未能下载图片")
         if failed_artists:
@@ -770,6 +968,7 @@ def api_fetch_post_counts():
             "success": True,
             "data": results,
             "message": "; ".join(messages),
+            "source": source,
             "details": {
                 "total": len(artist_ids),
                 "success": updated_count,
@@ -777,6 +976,12 @@ def api_fetch_post_counts():
                 "failed": failed_artists
             }
         })
+    except BooruConfigError as e:
+        logging.warning(f"抓取配置缺失: {e}")
+        return jsonify({"success": False, "error": str(e)}), 400
+    except BooruError as e:
+        logging.error(f"抓取失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 502
     except Exception as e:
         logging.error(f"获取作品数量失败: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
@@ -897,6 +1102,9 @@ def api_import_json_stream():
                 name_noob = artist_item.get('name_noob', '').strip()
                 name_nai = artist_item.get('name_nai', '').strip()
                 danbooru_link = artist_item.get('danbooru_link', '').strip()
+                gelbooru_link = artist_item.get('gelbooru_link', '').strip()
+                # 导入时双向补全两个站点的链接（旧导出文件只有 Danbooru 链接）
+                danbooru_link, gelbooru_link = sync_links(name_noob, name_nai, danbooru_link, gelbooru_link)
 
                 # 快速去重检查（使用预加载的数据）
                 existing_artist = None
@@ -912,6 +1120,7 @@ def api_import_json_stream():
                     'name_noob': name_noob,
                     'name_nai': name_nai,
                     'danbooru_link': danbooru_link,
+                    'gelbooru_link': gelbooru_link,
                     'post_count': artist_item.get('post_count'),
                     'notes': artist_item.get('notes', ''),
                     'skip_danbooru': artist_item.get('skip_danbooru', False)
