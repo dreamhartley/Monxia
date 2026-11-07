@@ -262,8 +262,9 @@ data/
 | `DATA_DIR` | 数据存储目录 | `/app/data`（容器内） |
 | `FLASK_ENV` | Flask 运行模式 | `production` |
 | `TZ` | 容器时区（影响日志时间戳） | `Asia/Shanghai`（`docker-compose.yml` 中设置） |
-| `GELBOORU_MIN_INTERVAL` | Gelbooru API 请求最小间隔（秒） | `1.0` |
-| `GELBOORU_CONCURRENCY` | Gelbooru 抓取并发数 | `2` |
+| `GELBOORU_MIN_INTERVAL` | Gelbooru API 请求最小间隔（秒） | `0.2` |
+| `GELBOORU_IMAGE_INTERVAL` | Gelbooru 图片下载最小间隔（秒） | `0.2` |
+| `GELBOORU_CONCURRENCY` | Gelbooru 抓取并发数 | `4` |
 | `GELBOORU_PROXY` | Gelbooru 请求代理（可选） | 空 |
 
 ## ❓ 常见问题
@@ -272,13 +273,29 @@ data/
 Gelbooru 的 API 必须携带账号凭据。请到「设置 → Gelbooru API」填写 User ID 与 API Key（在 Gelbooru 的 `Account → Options → API Access Credentials` 中获取），保存后点「测试连接」确认。
 
 **部署在 VPS / 机房后 Gelbooru 一直返回 429？**
-Gelbooru 对 API 有频率限制，机房 IP 的阈值明显更低。程序已内置处理：API 请求全局串行、默认 1 秒一次、触发 429 时按 `Retry-After` 退避并自动拉长间隔，且每个画师只发一次请求（作品数与封面同一次返回）。如果仍然频繁 429，可调大间隔或配置代理（环境变量）：
+实测这类 429 多数不是真实速率超限，而是 **Gelbooru 对部分 IP 段的封锁**：同一个 API Key 在家宽网络即使 10 个并发也正常，换到被封锁的机房 IP 则全部 429。
+程序默认节奏已经比较宽松（API 请求全局串行、默认 0.2 秒一次、每个画师只发一次请求），并对 429 做 `Retry-After` 退避与自适应降速。判断与处理：
+
+1. 用同一 Key 在别的网络（或本机）请求一次，若正常 → 当前出口 IP 段被封锁；
+2. 这种情况下调大间隔没有意义，需要更换 IP 或配置代理；
+3. 只有确认是真实速率超限时，才需要把间隔调大。
+
+实测参考（家宽 IP、持续压测得到的经验值）：
+
+| 项目 | 实测结果 |
+|------|----------|
+| 持续速率 | 3–5 请求/秒连续 1 分钟未触发 429 |
+| 瞬时突发 | 单波 12 个并发以内正常，16 个并发开始出现 429 |
+| 触发后恢复 | 约 5–10 秒即可恢复 |
+| 图片 CDN | 比 API 更敏感，8 并发 + 0.05 秒间隔会开始返回 404 |
+| 默认组合（0.2s 间隔、并发 4） | 实测 120 个画师连续抓取无 429，约 0.26 秒/画师 |
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `GELBOORU_MIN_INTERVAL` | API 请求最小间隔（秒），VPS 建议 1.5–3 | `1.0` |
-| `GELBOORU_CONCURRENCY` | Gelbooru 抓取并发（主要影响封面下载） | `2` |
-| `GELBOORU_PROXY` | 可选 HTTP(S) 代理，如 `http://127.0.0.1:7890`，用于绕过机房 IP 限流 | 空 |
+| `GELBOORU_MIN_INTERVAL` | API 请求最小间隔（秒） | `0.2` |
+| `GELBOORU_IMAGE_INTERVAL` | 图片下载最小间隔（秒），不建议低于 0.2 | `0.2` |
+| `GELBOORU_CONCURRENCY` | Gelbooru 抓取并发（主要影响封面下载） | `4` |
+| `GELBOORU_PROXY` | 可选 HTTP(S) 代理，如 `http://127.0.0.1:7890`，用于绕过 IP 段封锁 | 空 |
 
 Docker 部署时在 `docker-compose.yml` 的 `environment` 中取消对应注释即可。
 

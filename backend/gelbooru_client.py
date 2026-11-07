@@ -11,12 +11,18 @@ Gelbooru 没有 Danbooru 那样的 Cloudflare 人机验证，普通 HTTP 请求�
 作品总数直接取 `@attributes.count`，所以「作品数 + 帖子列表」一次请求即可拿到。
 
 限流说明（VPS / 机房 IP 尤其明显）：
-  - Gelbooru 对 API 请求有频率限制，超限直接返回 429；机房 IP 的阈值更低。
-  - 因此这里对 API 请求做全局串行 + 固定间隔，并对 429 做退避重试，
-    触发限流时自动拉长间隔（本次任务内生效），避免越重试越被封。
+  - 实测大量 429 来自 Gelbooru 对部分 IP 段的封锁，而不是真实的速率超限：
+    同一 API Key 在家宽网络 10 并发都正常，换到被封锁的机房 IP 则全部 429。
+  - 因此默认节奏放得比较宽松（API 请求全局串行、默认 0.3 秒一次），
+    同时对 429 做退避重试并在本次任务内自适应降速，兼顾「正常网络跑得快」与
+    「偶发限流不炸号」。
   - 可用环境变量调整：
-        GELBOORU_MIN_INTERVAL   API 请求最小间隔秒数（默认 1.0）
-        GELBOORU_PROXY          可选，HTTP(S) 代理地址，如 http://127.0.0.1:7890
+        GELBOORU_MIN_INTERVAL    API 请求最小间隔秒数（默认 0.3）
+        GELBOORU_IMAGE_INTERVAL  图片下载最小间隔秒数（默认 0.2）
+        GELBOORU_CONCURRENCY     抓取并发数（默认 4）
+        GELBOORU_PROXY           可选，HTTP(S) 代理地址，如 http://127.0.0.1:7890
+  - 如果同一 Key 在其他网络正常、当前环境持续 429，说明出口 IP 段被封锁，
+    调大间隔没有意义，需要更换 IP 或配置 GELBOORU_PROXY。
 
 另外实测：图片 CDN（img*.gelbooru.com）会校验来源，不带
 `Referer: https://gelbooru.com/` 时返回的是 HTML 拦截页而不是图片，
@@ -61,16 +67,21 @@ DEFAULT_HEADERS = {
     "Referer": f"{GELBOORU_BASE}/",
 }
 
-# 默认请求间隔（秒）：机房 IP 被限流时可通过环境变量调大
-DEFAULT_MIN_INTERVAL = float(os.environ.get('GELBOORU_MIN_INTERVAL', '1.0'))
+# 默认请求间隔（秒）。实测结果（同一 API Key，家宽 IP）：
+#   - 持续 3~5 请求/秒连续 1 分钟未见 429；
+#   - 单波瞬时并发 >12 次才会触发 429，恢复约 5~10 秒；
+#   - 图片 CDN 比 API 更敏感，8 并发 + 0.05s 间隔会开始返回 404。
+# 因此 API 默认取 0.2 秒（约 2.5~3 请求/秒），留出安全余量；
+# 需要更保守时用 GELBOORU_MIN_INTERVAL 调大。
+DEFAULT_MIN_INTERVAL = float(os.environ.get('GELBOORU_MIN_INTERVAL', '0.2'))
 # 触发 429 后单次最长等待（秒）
 MAX_BACKOFF_SECONDS = 120.0
 # 触发 429 后最多重试次数
 MAX_RATE_LIMIT_RETRIES = 4
 # 未提供 Retry-After 时的默认等待
 DEFAULT_429_WAIT = 15.0
-# 图片下载的最小间隔（秒），CDN 与 API 分别限流
-DEFAULT_IMAGE_INTERVAL = float(os.environ.get('GELBOORU_IMAGE_INTERVAL', '0.4'))
+# 图片下载的最小间隔（秒）：CDN 限流阈值比 API 高，间隔不要低于 0.2
+DEFAULT_IMAGE_INTERVAL = float(os.environ.get('GELBOORU_IMAGE_INTERVAL', '0.2'))
 # 可选代理
 GELBOORU_PROXY = os.environ.get('GELBOORU_PROXY', '').strip() or None
 
@@ -210,8 +221,9 @@ class GelbooruClient(BooruClientBase):
                 wait_seconds = retry_after if retry_after is not None else DEFAULT_429_WAIT
                 if attempt >= MAX_RATE_LIMIT_RETRIES:
                     raise BooruRateLimitError(
-                        "Gelbooru 持续限流（429），请稍后再试；VPS/机房 IP 可调大 "
-                        "GELBOORU_MIN_INTERVAL 或配置 GELBOORU_PROXY"
+                        "Gelbooru 持续返回 429：若同一 API Key 在其他网络可正常访问，"
+                        "通常是当前出口 IP 段被封锁，请更换 IP 或配置 GELBOORU_PROXY；"
+                        "否则可调大 GELBOORU_MIN_INTERVAL 后重试"
                     )
                 self._enter_cooldown(wait_seconds)
                 continue

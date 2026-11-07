@@ -12,10 +12,12 @@ from typing import Optional
 from booru_base import BooruClientBase, BooruConfigError
 from booru_links import SOURCE_GELBOORU, normalize_source
 
-# 各站点的默认并发数（Gelbooru 的 API 请求在客户端内部串行，这里主要控制图片下载并发）
+# 各站点的默认并发数
+# Gelbooru 的 API 请求在客户端内部串行，这里主要控制图片下载并发；
+# 实测 429 多来自 IP 段封锁而非真实速率限制，因此默认放宽到 4。
 DEFAULT_CONCURRENCY = {
     'danbooru': 5,
-    'gelbooru': int(os.environ.get('GELBOORU_CONCURRENCY', '2')),
+    'gelbooru': int(os.environ.get('GELBOORU_CONCURRENCY', '4')),
 }
 
 
