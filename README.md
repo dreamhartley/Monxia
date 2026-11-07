@@ -262,11 +262,25 @@ data/
 | `DATA_DIR` | 数据存储目录 | `/app/data`（容器内） |
 | `FLASK_ENV` | Flask 运行模式 | `production` |
 | `TZ` | 容器时区（影响日志时间戳） | `Asia/Shanghai`（`docker-compose.yml` 中设置） |
+| `GELBOORU_MIN_INTERVAL` | Gelbooru API 请求最小间隔（秒） | `1.0` |
+| `GELBOORU_CONCURRENCY` | Gelbooru 抓取并发数 | `2` |
+| `GELBOORU_PROXY` | Gelbooru 请求代理（可选） | 空 |
 
 ## ❓ 常见问题
 
 **抓取全部失败，提示 Gelbooru 凭据无效？**
 Gelbooru 的 API 必须携带账号凭据。请到「设置 → Gelbooru API」填写 User ID 与 API Key（在 Gelbooru 的 `Account → Options → API Access Credentials` 中获取），保存后点「测试连接」确认。
+
+**部署在 VPS / 机房后 Gelbooru 一直返回 429？**
+Gelbooru 对 API 有频率限制，机房 IP 的阈值明显更低。程序已内置处理：API 请求全局串行、默认 1 秒一次、触发 429 时按 `Retry-After` 退避并自动拉长间隔，且每个画师只发一次请求（作品数与封面同一次返回）。如果仍然频繁 429，可调大间隔或配置代理（环境变量）：
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `GELBOORU_MIN_INTERVAL` | API 请求最小间隔（秒），VPS 建议 1.5–3 | `1.0` |
+| `GELBOORU_CONCURRENCY` | Gelbooru 抓取并发（主要影响封面下载） | `2` |
+| `GELBOORU_PROXY` | 可选 HTTP(S) 代理，如 `http://127.0.0.1:7890`，用于绕过机房 IP 限流 | 空 |
+
+Docker 部署时在 `docker-compose.yml` 的 `environment` 中取消对应注释即可。
 
 **同样是这个画师，两个站点作品数不一样？**
 属正常现象：Danbooru 与 Gelbooru 的收录范围、审核标准和标签规范不同，作品数差异较大时可分别在两个站点核对。

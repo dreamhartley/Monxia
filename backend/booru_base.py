@@ -16,7 +16,7 @@ import logging
 import os
 from io import BytesIO
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from PIL import Image
 
@@ -45,6 +45,10 @@ class BooruAuthError(BooruError):
 
 class BooruConfigError(BooruError):
     """站点配置不完整（例如未配置 Gelbooru 的 user_id / api_key）"""
+
+
+class BooruRateLimitError(BooruError):
+    """触发站点限流（HTTP 429），且退避重试后仍未恢复"""
 
 
 class BooruClientBase:
@@ -89,6 +93,15 @@ class BooruClientBase:
     async def get_posts(self, artist_tag: str, limit: int = 10) -> List[Dict]:
         """获取画师帖子列表（统一结构）"""
         raise NotImplementedError
+
+    async def get_artist_summary(self, artist_tag: str, limit: int = 10) -> Tuple[Optional[int], List[Dict]]:
+        """
+        一次拿到「作品数 + 帖子列表」。
+        默认实现分两次请求；站点能在同一次响应里给出总数的可以覆盖此方法省一次请求。
+        """
+        post_count = await self.get_post_count(artist_tag)
+        posts = await self.get_posts(artist_tag, limit)
+        return post_count, posts
 
     async def _fetch_bytes(self, url: str, timeout: int = 30) -> Optional[bytes]:
         """下载原始图片字节（子类实现）"""

@@ -24,6 +24,13 @@ services:
       - DATA_DIR=/app/data
       # 时区（影响日志时间戳，可按需修改）
       - TZ=Asia/Shanghai
+      # ---- Gelbooru 限流相关（VPS / 机房 IP 建议调大间隔，仍被 429 时可配代理）----
+      # API 请求最小间隔（秒），默认 1.0
+      # - GELBOORU_MIN_INTERVAL=1.5
+      # 抓取并发（主要影响封面下载），默认 2
+      # - GELBOORU_CONCURRENCY=2
+      # HTTP(S) 代理，例如宿主机上的代理：http://host.docker.internal:7890
+      # - GELBOORU_PROXY=http://host.docker.internal:7890
     volumes:
       # 核心持久化挂载：数据库与图片全部落在宿主机 ./data 下
       - ./data:/app/data
