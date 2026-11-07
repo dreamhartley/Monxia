@@ -73,6 +73,7 @@ import {
   type AutoCompleteProgress,
 } from '@/lib/api'
 import { Progress } from '@/components/ui/progress'
+import { getGelbooruUrl } from '@/lib/artistLinks'
 import { PRESET_DRAFT_KEY, type PresetDraft, type ArtistTag, formatNoob, formatNai } from './PresetsPage'
 import { ChevronDown, Users, User } from 'lucide-react'
 import { useIsMobile } from '@/hooks/useMediaQuery'
@@ -1131,7 +1132,10 @@ export default function ArtistsPage() {
   }, [])
 
   // 渲染下拉菜单
-  const renderDropdownMenu = (artist: Artist, isListView = false) => (
+  const renderDropdownMenu = (artist: Artist, isListView = false) => {
+    const gelbooruUrl = getGelbooruUrl(artist)
+
+    return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
@@ -1191,6 +1195,14 @@ export default function ArtistsPage() {
             打开 Danbooru
           </DropdownMenuItem>
         )}
+        {gelbooruUrl && (
+          <DropdownMenuItem
+            onClick={() => window.open(gelbooruUrl, '_blank', 'noopener,noreferrer')}
+          >
+            <ExternalLink className="h-4 w-4 mr-2" />
+            打开 Gelbooru
+          </DropdownMenuItem>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           onClick={() => {
@@ -1204,7 +1216,8 @@ export default function ArtistsPage() {
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
-  )
+    )
+  }
 
   // 渲染网格视图卡片
   const renderGridCard = (artist: Artist) => {
