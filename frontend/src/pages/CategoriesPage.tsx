@@ -59,6 +59,8 @@ export default function CategoriesPage() {
     longPressTimer: ReturnType<typeof setTimeout> | null
   } | null>(null)
 
+  const cleanupRef = useRef<(() => void) | null>(null)
+
   // 自动滚动状态
   const autoScrollRef = useRef<{
     animationId: number | null
@@ -439,7 +441,7 @@ export default function CategoriesPage() {
       container.addEventListener('touchcancel', handleTouchEndNative)
 
       // 存储清理函数
-      ;(scrollContainerRef as any)._cleanup = () => {
+      cleanupRef.current = () => {
         container.removeEventListener('touchmove', handleTouchMoveNative)
         container.removeEventListener('touchend', handleTouchEndNative)
         container.removeEventListener('touchcancel', handleTouchEndNative)
@@ -454,16 +456,12 @@ export default function CategoriesPage() {
         cancelAnimationFrame(autoScrollRef.current.animationId)
         autoScrollRef.current.animationId = null
       }
-      if ((scrollContainerRef as any)._cleanup) {
-        (scrollContainerRef as any)._cleanup()
-        ;(scrollContainerRef as any)._cleanup = null
+      if (cleanupRef.current) {
+        cleanupRef.current()
+        cleanupRef.current = null
       }
     }
   }, [isSortDialogOpen, dragOverCategoryId, categoryOrder, categories, sortableCategories])
-
-  useEffect(() => {
-    loadCategories()
-  }, [])
 
   const loadCategories = async () => {
     setLoading(true)
@@ -478,6 +476,11 @@ export default function CategoriesPage() {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 初始加载
+    void loadCategories()
+  }, [])
 
   const resetForm = () => {
     setFormData({ name: '' })

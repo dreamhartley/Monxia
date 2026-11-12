@@ -31,6 +31,10 @@ IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 BACKGROUNDS_DIR = DATA_DIR / 'backgrounds'
 BACKGROUNDS_DIR.mkdir(parents=True, exist_ok=True)
 
+# 画师串参考图存储目录
+PRESET_IMAGES_DIR = DATA_DIR / 'preset_images'
+PRESET_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+
 # 单张图片最大体积（字节），防止超大原图撑爆内存
 MAX_IMAGE_BYTES = 40 * 1024 * 1024
 

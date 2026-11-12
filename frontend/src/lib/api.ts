@@ -1,3 +1,5 @@
+import type { ArtistFormat } from './artistString'
+
 const API_BASE = '/api'
 
 interface ApiResponse<T = unknown> {
@@ -227,18 +229,21 @@ export const toolsApi = {
 // 导入导出相关
 export interface ImportProgress {
   type: 'start' | 'phase' | 'phase_complete' | 'progress' | 'complete' | 'error'
-  phase?: 'categories' | 'dedup_load' | 'process' | 'database'
+  phase?: 'categories' | 'dedup_load' | 'process' | 'database' | 'presets'
   action?: 'create' | 'update'
   current?: number
   total?: number
   total_categories?: number
   total_artists?: number
+  total_presets?: number
   to_create?: number
   to_update?: number
   count?: number
   created?: number
   updated?: number
   categories_count?: number
+  presets_created?: number
+  presets_updated?: number
   created_count?: number
   updated_count?: number
   message?: string
@@ -246,11 +251,11 @@ export interface ImportProgress {
 }
 
 export const importExportApi = {
-  exportJson: () => request<{ categories: Category[]; artists: Artist[] }>('/export/json'),
+  exportJson: () => request<ExportData>('/export/json'),
 
   // SSE 流式导入（并发优化版本）
   importJsonStream: (
-    data: { categories: Category[]; artists: Artist[] },
+    data: ExportData,
     onProgress: (data: ImportProgress) => void
   ): Promise<void> => {
     return new Promise((resolve, reject) => {
@@ -320,33 +325,87 @@ export const importExportApi = {
 }
 
 // 画师串相关
+export type PresetFormat = ArtistFormat
+
+export interface PresetImage {
+  id: number
+  filename: string
+  display_order: number
+}
+
 export interface Preset {
   id: number
   name: string
   description: string
-  noob_text?: string
-  nai_text?: string
+  format: PresetFormat
+  text: string
+  images: PresetImage[]
   created_at: string
   updated_at: string
+}
+
+export interface PresetInput {
+  name: string
+  description: string
+  format: PresetFormat
+  text: string
+}
+
+/** 备份中的画师串只包含名称 / 格式 / 内容 */
+export interface ExportPreset {
+  name: string
+  format: PresetFormat
+  text: string
+}
+
+export interface ExportData {
+  version?: number
+  exported_at?: string
+  categories: Category[]
+  artists: Artist[]
+  presets?: ExportPreset[]
+}
+
+export function presetImageUrl(filename: string): string {
+  return `/preset-images/${encodeURIComponent(filename)}`
 }
 
 export const presetApi = {
   getAll: () => request<Preset[]>('/presets'),
 
-  create: (name: string, description: string, noob_text: string, nai_text: string) =>
-    request<{ id: number }>('/presets', {
+  create: (data: PresetInput) =>
+    request<Preset>('/presets', {
       method: 'POST',
-      body: JSON.stringify({ name, description, noob_text, nai_text }),
+      body: JSON.stringify(data),
     }),
 
-  update: (id: number, name: string, description: string, noob_text: string, nai_text: string) =>
-    request(`/presets/${id}`, {
+  update: (id: number, data: PresetInput) =>
+    request<Preset>(`/presets/${id}`, {
       method: 'PUT',
-      body: JSON.stringify({ name, description, noob_text, nai_text }),
+      body: JSON.stringify(data),
     }),
 
   delete: (id: number) =>
     request(`/presets/${id}`, {
+      method: 'DELETE',
+    }),
+
+  uploadImages: (id: number, files: File[]) => {
+    const formData = new FormData()
+    for (const file of files) {
+      formData.append('files', file)
+    }
+    return fetch(`${API_BASE}/presets/${id}/images`, {
+      method: 'POST',
+      credentials: 'include',
+      body: formData,
+    }).then((res) => res.json()) as Promise<
+      ApiResponse<{ images: PresetImage[]; failed?: Array<{ name: string; error: string }> }>
+    >
+  },
+
+  deleteImage: (id: number, imageId: number) =>
+    request(`/presets/${id}/images/${imageId}`, {
       method: 'DELETE',
     }),
 }

@@ -1,5 +1,9 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from '@/hooks/useAuth'
+import { ToastProvider } from '@/contexts/ToastContext'
+import { PresetEditorProvider } from '@/contexts/PresetEditorContext'
+import { PresetDraftFab } from '@/components/presets/PresetDraftFab'
+import { PresetEditorHost } from '@/components/presets/PresetEditorHost'
 import { MainLayout } from '@/components/layout/MainLayout'
 import LoginPage from '@/pages/LoginPage'
 import ArtistsPage from '@/pages/ArtistsPage'
@@ -27,7 +31,13 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     return <Navigate to="/login" replace />
   }
 
-  return <MainLayout>{children}</MainLayout>
+  return (
+    <PresetEditorProvider>
+      <MainLayout>{children}</MainLayout>
+      <PresetDraftFab />
+      <PresetEditorHost />
+    </PresetEditorProvider>
+  )
 }
 
 // 登录页路由（已登录则重定向到首页）
@@ -112,9 +122,11 @@ function AppRoutes() {
 function App() {
   return (
     <BrowserRouter>
-      <AuthProvider>
-        <AppRoutes />
-      </AuthProvider>
+      <ToastProvider>
+        <AuthProvider>
+          <AppRoutes />
+        </AuthProvider>
+      </ToastProvider>
     </BrowserRouter>
   )
 }

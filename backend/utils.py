@@ -13,6 +13,7 @@ from booru_base import (
     BooruError,
     IMAGES_DIR,
     BACKGROUNDS_DIR,  # noqa: F401  (app.py 从 utils 导入，保持原有导入路径)
+    PRESET_IMAGES_DIR,
 )
 from booru_links import (
     SOURCE_DANBOORU,
