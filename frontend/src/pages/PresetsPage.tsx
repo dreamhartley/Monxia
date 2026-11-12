@@ -85,14 +85,16 @@ export default function PresetsPage() {
         )}
       </ScrollArea>
 
-      <PresetDetailDialog
-        preset={detailPreset}
-        onClose={() => setDetailPreset(null)}
-        onEdit={(preset) => {
-          setDetailPreset(null)
-          openEdit(preset)
-        }}
-      />
+      {detailPreset && (
+        <PresetDetailDialog
+          preset={detailPreset}
+          onClose={() => setDetailPreset(null)}
+          onEdit={(preset) => {
+            setDetailPreset(null)
+            openEdit(preset)
+          }}
+        />
+      )}
     </div>
   )
 }

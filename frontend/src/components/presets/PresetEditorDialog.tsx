@@ -586,6 +586,10 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
             setPreviewImage(null)
           }
         }}
+        onInteractOutside={(event) => {
+          // 大图预览是独立 Portal，避免点击预览遮罩时误关整个编辑器
+          if (previewImage) event.preventDefault()
+        }}
       >
         <DialogHeader className="border-b px-6 py-4">
           <DialogTitle>{mode === 'edit' ? '编辑画师串' : '创建画师串'}</DialogTitle>
