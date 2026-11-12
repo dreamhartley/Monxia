@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -10,6 +10,8 @@ interface ImageLightboxProps {
 }
 
 export function ImageLightbox({ url, alt, onClose }: ImageLightboxProps) {
+  const overlayRef = useRef<HTMLDivElement>(null)
+
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose()
@@ -18,9 +20,20 @@ export function ImageLightbox({ url, alt, onClose }: ImageLightboxProps) {
     return () => window.removeEventListener('keydown', handleKey)
   }, [onClose])
 
+  // 大图是独立 Portal：阻止 pointerdown 冒泡到 document，
+  // 否则上层 Dialog 会把它当成“点击弹窗外部”而一起关闭。
+  useEffect(() => {
+    const overlay = overlayRef.current
+    if (!overlay) return
+    const stopPointerDown = (event: PointerEvent) => event.stopPropagation()
+    overlay.addEventListener('pointerdown', stopPointerDown)
+    return () => overlay.removeEventListener('pointerdown', stopPointerDown)
+  }, [])
+
   return createPortal(
     <div
-      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/85 p-4"
+      ref={overlayRef}
+      className="pointer-events-auto fixed inset-0 z-[120] flex items-center justify-center bg-black/85 p-4"
       onClick={onClose}
       role="presentation"
     >

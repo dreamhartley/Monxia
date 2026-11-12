@@ -41,8 +41,13 @@ export function PresetDetailDialog({ preset, onClose, onEdit }: PresetDetailDial
     }
   }
 
+  const closeDetail = () => {
+    setPreviewImage(null)
+    onClose()
+  }
+
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
+    <Dialog open onOpenChange={(open) => !open && closeDetail()}>
       <DialogContent
         className="flex max-h-[90vh] max-w-3xl flex-col gap-0 overflow-hidden p-0"
         onEscapeKeyDown={(event) => {
@@ -50,6 +55,10 @@ export function PresetDetailDialog({ preset, onClose, onEdit }: PresetDetailDial
             event.preventDefault()
             setPreviewImage(null)
           }
+        }}
+        onInteractOutside={(event) => {
+          // 大图预览是独立 Portal，不能让点击预览遮罩被当成“点击弹窗外部”
+          if (previewImage) event.preventDefault()
         }}
       >
         <DialogHeader className="border-b px-6 py-4">
@@ -108,7 +117,7 @@ export function PresetDetailDialog({ preset, onClose, onEdit }: PresetDetailDial
             参考图仅保存在本机，不参与导出
           </span>
           <div className="ml-auto flex items-center gap-2">
-            <Button type="button" variant="outline" onClick={onClose}>
+            <Button type="button" variant="outline" onClick={closeDetail}>
               关闭
             </Button>
             <Button type="button" onClick={() => onEdit(preset)}>
