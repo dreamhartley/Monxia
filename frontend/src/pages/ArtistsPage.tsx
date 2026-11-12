@@ -74,7 +74,20 @@ import {
 } from '@/lib/api'
 import { Progress } from '@/components/ui/progress'
 import { getGelbooruUrl } from '@/lib/artistLinks'
-import { PRESET_DRAFT_KEY, type PresetDraft, type ArtistTag, formatNoob, formatNai } from './PresetsPage'
+import {
+  formatArtistString,
+  formatNaiName,
+  formatNoobName,
+  normalizeArtistName,
+} from '@/lib/artistString'
+import {
+  emptyDraft,
+  getPresetDraft,
+  hasDraftContent,
+  updatePresetDraft,
+  usePresetDraft,
+} from '@/lib/presetDraft'
+import { usePresetEditor } from '@/contexts/PresetEditorContext'
 import { ChevronDown, Users, User } from 'lucide-react'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 
@@ -98,6 +111,9 @@ export default function ArtistsPage() {
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false)
   const [filtersExpanded, setFiltersExpanded] = useState(false)
   const isMobile = useIsMobile()
+  const presetDraft = usePresetDraft()
+  const { request: presetEditorRequest } = usePresetEditor()
+  const hasPresetDraft = hasDraftContent(presetDraft) && !presetEditorRequest.open
   const [favorites, setFavorites] = useState<Set<number>>(() => {
     const saved = localStorage.getItem('artist_favorites')
     return saved ? new Set(JSON.parse(saved)) : new Set()
@@ -172,12 +188,8 @@ export default function ArtistsPage() {
 
   // 监听 URL 参数变化
   useEffect(() => {
-    const categoryParam = searchParams.get('category')
-    if (categoryParam) {
-      setSelectedCategory(categoryParam)
-    } else {
-      setSelectedCategory('all')
-    }
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 同步 URL 参数到筛选状态
+    setSelectedCategory(searchParams.get('category') || 'all')
   }, [searchParams])
 
   // 处理分类切换
@@ -382,11 +394,6 @@ export default function ArtistsPage() {
       })
   }, [artists, searchQuery, selectedCategory, sortOption, showFavoritesOnly, favorites])
 
-  // Load data
-  useEffect(() => {
-    loadData()
-  }, [])
-
   // Save viewMode to localStorage
   useEffect(() => {
     localStorage.setItem('artist_view_mode', viewMode)
@@ -411,6 +418,12 @@ export default function ArtistsPage() {
       setLoading(false)
     }
   }
+
+  // Load data
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 初始加载
+    void loadData()
+  }, [])
 
   // 刷新数据并保持滚动位置
   const loadDataPreservingScroll = useCallback(async () => {
@@ -670,16 +683,16 @@ export default function ArtistsPage() {
         // 1. 自动补全名称信息
         const autoCompleteRes = await toolsApi.autoComplete(artistName, '', '')
         let nameData = {
-          name_noob: formatNoob(artistName),
-          name_nai: formatNai(artistName),
+          name_noob: formatNoobName(artistName),
+          name_nai: formatNaiName(artistName),
           danbooru_link: '',
           gelbooru_link: '',
         }
 
         if (autoCompleteRes.success && autoCompleteRes.data) {
           nameData = {
-            name_noob: autoCompleteRes.data.name_noob || formatNoob(artistName),
-            name_nai: autoCompleteRes.data.name_nai || formatNai(artistName),
+            name_noob: autoCompleteRes.data.name_noob || formatNoobName(artistName),
+            name_nai: autoCompleteRes.data.name_nai || formatNaiName(artistName),
             danbooru_link: autoCompleteRes.data.danbooru_link || '',
             gelbooru_link: autoCompleteRes.data.gelbooru_link || '',
           }
@@ -1082,46 +1095,25 @@ export default function ArtistsPage() {
     showToast(message || '已复制到剪贴板')
   }
 
-  // 添加画师到画师串草稿
+  // 添加画师到画师串草稿（统一纯名称，不再维护 NOOB / NAI 两套）
   const addToPresetDraft = (artist: Artist) => {
     try {
-      // 读取现有草稿
-      const saved = localStorage.getItem(PRESET_DRAFT_KEY)
-      let draft: PresetDraft = {
-        name: '',
-        description: '',
-        noobTags: [],
-        naiTags: [],
-      }
-      if (saved) {
-        draft = JSON.parse(saved)
+      const name = normalizeArtistName(artist.name_noob || artist.name_nai || '')
+      if (!name) {
+        showToast('该画师没有可用的名称')
+        return
       }
 
-      // 添加画师的 NOOB 格式（如果有）
-      if (artist.name_noob) {
-        const noobTag: ArtistTag = { name: artist.name_noob, weight: 1.0 }
-        // 检查是否已存在
-        const exists = draft.noobTags.some(t => t.name === noobTag.name)
-        if (!exists) {
-          draft.noobTags.push(noobTag)
-        }
+      const draft = getPresetDraft() ?? emptyDraft()
+      if (draft.tags.some((tag) => tag.name.toLowerCase() === name.toLowerCase())) {
+        showToast(`${name} 已在画师串草稿中`)
+        return
       }
 
-      // 添加画师的 NAI 格式（如果有）
-      if (artist.name_nai) {
-        const naiTag: ArtistTag = { name: artist.name_nai, weight: 1.0 }
-        // 检查是否已存在
-        const exists = draft.naiTags.some(t => t.name === naiTag.name)
-        if (!exists) {
-          draft.naiTags.push(naiTag)
-        }
-      }
-
-      // 保存更新后的草稿
-      localStorage.setItem(PRESET_DRAFT_KEY, JSON.stringify(draft))
-
-      // 显示成功提示
-      showToast(`已将 ${getDisplayName(artist)} 添加到画师串草稿`)
+      const tags = [...draft.tags, { name, weight: 1 }]
+      const text = formatArtistString(tags, draft.format)
+      updatePresetDraft({ tags, text })
+      showToast(`已将 ${name} 添加到画师串草稿，点击右下角图标继续编辑`)
     } catch (e) {
       console.error('Failed to add to preset draft:', e)
       showToast('添加失败')
@@ -1903,7 +1895,9 @@ export default function ArtistsPage() {
             initial={{ opacity: 0, scale: 0.8 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.8 }}
-            className="fixed bottom-6 right-6 z-20"
+            className={`fixed right-6 z-30 transition-[bottom] duration-200 ${
+              hasPresetDraft ? 'bottom-20' : 'bottom-6'
+            }`}
           >
             <Button
               size="icon"

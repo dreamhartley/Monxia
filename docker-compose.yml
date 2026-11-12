@@ -24,11 +24,13 @@ services:
       - DATA_DIR=/app/data
       # 时区（影响日志时间戳，可按需修改）
       - TZ=Asia/Shanghai
-      # ---- Gelbooru 限流相关（VPS / 机房 IP 建议调大间隔，仍被 429 时可配代理）----
-      # API 请求最小间隔（秒），默认 1.0
-      # - GELBOORU_MIN_INTERVAL=1.5
-      # 抓取并发（主要影响封面下载），默认 2
-      # - GELBOORU_CONCURRENCY=2
+      # ---- Gelbooru 相关（429 多为 IP 段封锁：优先换 IP / 配代理，而不是调大间隔）----
+      # API 请求最小间隔（秒），默认 0.2（实测 3~5 请求/秒可持续）
+      # - GELBOORU_MIN_INTERVAL=0.2
+      # 图片下载最小间隔（秒），默认 0.2（CDN 比 API 敏感，不建议更低）
+      # - GELBOORU_IMAGE_INTERVAL=0.2
+      # 抓取并发（主要影响封面下载），默认 4
+      # - GELBOORU_CONCURRENCY=4
       # HTTP(S) 代理，例如宿主机上的代理：http://host.docker.internal:7890
       # - GELBOORU_PROXY=http://host.docker.internal:7890
     volumes:

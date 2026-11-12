@@ -148,7 +148,11 @@ export default function SettingsPage() {
         a.click()
         document.body.removeChild(a)
         URL.revokeObjectURL(url)
-        setMessage({ type: 'success', text: 'JSON 导出成功' })
+        const presetCount = res.data.presets?.length ?? 0
+        setMessage({
+          type: 'success',
+          text: `JSON 导出成功（含 ${presetCount} 个画师串）`,
+        })
       } else {
         setMessage({ type: 'error', text: res.error || '导出失败' })
       }
@@ -1001,7 +1005,7 @@ export default function SettingsPage() {
                   <div>
                     <CardTitle className="text-base">导出数据</CardTitle>
                     <CardDescription className="text-xs mt-0.5">
-                      备份所有分类和画师
+                      备份分类、画师与画师串（名称 / 格式 / 内容）
                     </CardDescription>
                   </div>
                 </div>
@@ -1019,6 +1023,9 @@ export default function SettingsPage() {
                   )}
                   导出 JSON
                 </Button>
+                <p className="mt-3 text-center text-xs text-muted-foreground">
+                  参考图仅保存在本机，不会包含在备份中
+                </p>
               </CardContent>
             </Card>
 
@@ -1032,7 +1039,7 @@ export default function SettingsPage() {
                   <div>
                     <CardTitle className="text-base">导入数据</CardTitle>
                     <CardDescription className="text-xs mt-0.5">
-                      从备份文件恢复
+                      从备份文件恢复分类、画师与画师串
                     </CardDescription>
                   </div>
                 </div>
@@ -1076,6 +1083,7 @@ export default function SettingsPage() {
                             {importProgress.phase === 'database' && (
                               importProgress.action === 'create' ? '创建画师...' : '更新画师...'
                             )}
+                            {importProgress.phase === 'presets' && '处理画师串...'}
                           </span>
                           {importProgress.current !== undefined && importProgress.total !== undefined && importProgress.total > 0 && (
                             <>
@@ -1104,6 +1112,9 @@ export default function SettingsPage() {
                     </div>
                   )}
                 </div>
+                <p className="mt-2 text-center text-xs text-muted-foreground">
+                  导入不会恢复参考图；已有画师串的参考图会保留
+                </p>
               </CardContent>
             </Card>
           </div>

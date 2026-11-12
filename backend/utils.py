@@ -13,6 +13,7 @@ from booru_base import (
     BooruError,
     IMAGES_DIR,
     BACKGROUNDS_DIR,  # noqa: F401  (app.py 从 utils 导入，保持原有导入路径)
+    PRESET_IMAGES_DIR,
 )
 from booru_links import (
     SOURCE_DANBOORU,
@@ -368,8 +369,8 @@ async def _fetch_post_counts_batch_async(artists: list, concurrency: Optional[in
     try:
         # 使用信号量控制并发数
         semaphore = asyncio.Semaphore(concurrency)
-        # Gelbooru 客户端内部已做请求节流，这里再加一点间隔，避免图片下载过于密集
-        interval = 0.65 if source == SOURCE_DANBOORU else 0.2
+        # Gelbooru 客户端内部已做请求节流，这里只留极小间隔让出事件循环
+        interval = 0.65 if source == SOURCE_DANBOORU else 0.05
 
         async def fetch_with_semaphore(artist: dict) -> Tuple[int, Optional[Dict]]:
             async with semaphore:

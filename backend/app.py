@@ -8,10 +8,13 @@ from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from functools import wraps
 import json
+import uuid
+import sqlite3
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 import logging
-from PIL import Image
+from PIL import Image, ImageOps
 
 logging.basicConfig(level=logging.INFO)
 
@@ -30,12 +33,15 @@ from database import (
     init_db, get_all_categories, create_category, update_category, get_all_artists,
     get_artists_by_category, create_artist, update_artist, delete_artist,
     get_artist_by_id, get_db, check_artist_exists,
-    get_all_artists_for_dedup, batch_create_artists, batch_update_artists
+    get_all_artists_for_dedup, batch_create_artists, batch_update_artists,
+    get_all_presets, get_preset_by_id, create_preset, update_preset_record,
+    delete_preset_record, count_preset_images, add_preset_image,
+    delete_preset_image, upsert_preset_by_name,
 )
 from utils import (
     auto_complete_artist,
     fetch_post_counts_batch, fetch_post_counts_streaming,
-    IMAGES_DIR, BACKGROUNDS_DIR
+    IMAGES_DIR, BACKGROUNDS_DIR, PRESET_IMAGES_DIR
 )
 from booru_base import BooruConfigError, BooruError
 from booru_links import normalize_source, sync_links, SOURCE_DANBOORU, SOURCE_GELBOORU
@@ -104,6 +110,11 @@ def serve_image(filename):
 def serve_background(filename):
     """提供登录背景图片"""
     return send_from_directory(BACKGROUNDS_DIR, filename)
+
+@app.route('/preset-images/<path:filename>')
+def serve_preset_image(filename):
+    """提供画师串参考图"""
+    return send_from_directory(PRESET_IMAGES_DIR, filename)
 
 # -------------------------------
 # 认证 API
@@ -994,14 +1005,25 @@ def api_fetch_post_counts():
 @app.route('/api/export/json', methods=['GET'])
 @login_required
 def api_export_json():
-    """导出为JSON"""
+    """导出为 JSON（画师串仅名称 / 格式 / 内容，不包含参考图）"""
     try:
         categories = get_all_categories()
         artists = get_all_artists()
+        presets = [
+            {
+                "name": preset["name"],
+                "format": preset["format"],
+                "text": preset["text"],
+            }
+            for preset in get_all_presets()
+        ]
 
         data = {
+            "version": 2,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
             "categories": categories,
-            "artists": artists
+            "artists": artists,
+            "presets": presets,
         }
 
         return jsonify({"success": True, "data": data})
@@ -1021,17 +1043,23 @@ def api_import_json_stream():
     import threading
 
     # 获取请求数据
-    data = request.json
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        data = {}
     categories_data = data.get('categories', [])
     artists_data = data.get('artists', [])
+    presets_data = data.get('presets', [])
+    if not isinstance(presets_data, list):
+        presets_data = []
 
     def generate():
         try:
             total_artists = len(artists_data)
             total_categories = len(categories_data)
+            total_presets = len(presets_data)
 
             # 发送初始状态
-            yield f"data: {json.dumps({'type': 'start', 'total_categories': total_categories, 'total_artists': total_artists})}\n\n"
+            yield f"data: {json.dumps({'type': 'start', 'total_categories': total_categories, 'total_artists': total_artists, 'total_presets': total_presets})}\n\n"
 
             # ========== 阶段1：处理分类 ==========
             yield f"data: {json.dumps({'type': 'phase', 'phase': 'categories', 'message': '正在处理分类...'})}\n\n"
@@ -1184,9 +1212,50 @@ def api_import_json_stream():
 
             yield f"data: {json.dumps({'type': 'phase_complete', 'phase': 'database', 'created': created_count, 'updated': updated_count})}\n\n"
 
+            # ========== 阶段5：处理画师串（仅名称 / 格式 / 内容，不包含参考图） ==========
+            yield f"data: {json.dumps({'type': 'phase', 'phase': 'presets', 'message': '正在处理画师串...'})}\n\n"
+
+            presets_created = 0
+            presets_updated = 0
+            presets_skipped = 0
+
+            for idx, item in enumerate(presets_data):
+                if not isinstance(item, dict):
+                    presets_skipped += 1
+                    continue
+
+                name = str(item.get('name', '')).strip()
+                text = str(item.get('text', '')).strip()
+                format_value = str(item.get('format', '')).strip().lower()
+                if format_value not in ('noob', 'nai'):
+                    format_value = 'noob'
+
+                if not name or not text:
+                    presets_skipped += 1
+                    continue
+
+                try:
+                    action, _ = upsert_preset_by_name(name, format_value, text)
+                    if action == 'created':
+                        presets_created += 1
+                    else:
+                        presets_updated += 1
+                except Exception as e:
+                    logging.warning(f"导入画师串失败 {name}: {e}")
+                    presets_skipped += 1
+
+                if total_presets > 0 and ((idx + 1) % 20 == 0 or idx == total_presets - 1):
+                    yield f"data: {json.dumps({'type': 'progress', 'phase': 'presets', 'current': idx + 1, 'total': total_presets})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'phase_complete', 'phase': 'presets', 'created': presets_created, 'updated': presets_updated, 'skipped': presets_skipped})}\n\n"
+
             # 发送完成状态
-            message = f"成功导入 {len(categories_data)} 个分类，新增 {created_count} 个画师，更新 {updated_count} 个画师"
-            yield f"data: {json.dumps({'type': 'complete', 'message': message, 'categories_count': len(categories_data), 'created_count': created_count, 'updated_count': updated_count})}\n\n"
+            message = (
+                f"成功导入 {len(categories_data)} 个分类，新增 {created_count} 个画师，"
+                f"更新 {updated_count} 个画师，新增 {presets_created} 个画师串，"
+                f"更新 {presets_updated} 个画师串"
+            )
+            yield f"data: {json.dumps({'type': 'complete', 'message': message, 'categories_count': len(categories_data), 'created_count': created_count, 'updated_count': updated_count, 'presets_created': presets_created, 'presets_updated': presets_updated})}\n\n"
 
         except Exception as e:
             logging.error(f"导入JSON失败: {e}")
@@ -1203,92 +1272,218 @@ def api_import_json_stream():
 # 画师串(预设)管理 API
 # -------------------------------
 
+MAX_PRESET_IMAGES = 5
+MAX_PRESET_IMAGE_BYTES = 15 * 1024 * 1024
+
+
+def _parse_preset_payload():
+    """读取并校验画师串请求体"""
+    data = request.get_json(silent=True) or {}
+    name = str(data.get('name', '')).strip()
+    description = str(data.get('description', '')).strip()
+    format_value = str(data.get('format', '')).strip().lower()
+    text = str(data.get('text', '')).strip()
+
+    if not name:
+        return None, "名称不能为空"
+    if len(name) > 100:
+        return None, "名称不能超过 100 个字符"
+    if len(description) > 500:
+        return None, "描述不能超过 500 个字符"
+    if format_value not in ('noob', 'nai'):
+        return None, "格式必须是 noob 或 nai"
+    if not text:
+        return None, "画师串内容不能为空"
+    if len(text) > 20000:
+        return None, "画师串内容过长"
+
+    return {
+        'name': name,
+        'description': description,
+        'format': format_value,
+        'text': text,
+    }, None
+
+
+def _save_preset_image(file, preset_id: int):
+    """压缩并保存单张画师串参考图，返回 (filename, error)"""
+    if not file or not file.filename:
+        return None, '未选择文件'
+    if not allowed_file(file.filename):
+        return None, '不支持的文件格式'
+
+    try:
+        content = file.read()
+        if len(content) > MAX_PRESET_IMAGE_BYTES:
+            return None, '图片超过 15MB'
+
+        with Image.open(BytesIO(content)) as image:
+            image = ImageOps.exif_transpose(image)
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            image.thumbnail((2048, 2048), Image.LANCZOS)
+            filename = f"{preset_id}_{uuid.uuid4().hex}.jpg"
+            image.save(PRESET_IMAGES_DIR / filename, 'JPEG', quality=82, optimize=True)
+            return filename, None
+    except Exception as e:
+        logging.warning(f"画师串参考图处理失败: {e}")
+        return None, '无效的图片文件'
+
+
 @app.route('/api/presets', methods=['GET'])
 @login_required
 def api_get_presets():
-    """获取所有画师串"""
+    """获取所有画师串（含参考图列表）"""
     try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM artist_presets ORDER BY updated_at DESC")
-            presets = [dict(row) for row in cursor.fetchall()]
-            return jsonify({"success": True, "data": presets})
+        return jsonify({"success": True, "data": get_all_presets()})
     except Exception as e:
         logging.error(f"获取画师串失败: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
+
 @app.route('/api/presets', methods=['POST'])
 @login_required
 def api_create_preset():
-    """创建画师串"""
+    """创建画师串（只保存一种格式）"""
+    payload, error = _parse_preset_payload()
+    if error:
+        return jsonify({"success": False, "error": error}), 400
+
     try:
-        data = request.json
-        name = data.get('name', '').strip()
-        description = data.get('description', '').strip()
-        noob_text = data.get('noob_text', '').strip()
-        nai_text = data.get('nai_text', '').strip()
-
-        if not name:
-            return jsonify({"success": False, "error": "名称不能为空"}), 400
-
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO artist_presets (name, description, noob_text, nai_text)
-                VALUES (?, ?, ?, ?)
-            """, (name, description, noob_text, nai_text))
-
-            preset_id = cursor.lastrowid
-
-        return jsonify({"success": True, "data": {"id": preset_id}})
+        preset = create_preset(
+            payload['name'], payload['description'], payload['format'], payload['text']
+        )
+        return jsonify({"success": True, "data": preset})
+    except sqlite3.IntegrityError:
+        return jsonify({"success": False, "error": "画师串名称已存在"}), 409
     except Exception as e:
         logging.error(f"创建画师串失败: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
 
 @app.route('/api/presets/<int:preset_id>', methods=['PUT'])
 @login_required
 def api_update_preset(preset_id):
     """更新画师串"""
+    payload, error = _parse_preset_payload()
+    if error:
+        return jsonify({"success": False, "error": error}), 400
+
     try:
-        data = request.json
-        name = data.get('name', '').strip()
-        description = data.get('description', '').strip()
-        noob_text = data.get('noob_text', '').strip()
-        nai_text = data.get('nai_text', '').strip()
+        updated = update_preset_record(
+            preset_id,
+            payload['name'],
+            payload['description'],
+            payload['format'],
+            payload['text'],
+        )
+        if not updated:
+            return jsonify({"success": False, "error": "画师串不存在"}), 404
 
-        if not name:
-            return jsonify({"success": False, "error": "名称不能为空"}), 400
-
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE artist_presets
-                SET name = ?, description = ?, noob_text = ?, nai_text = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, (name, description, noob_text, nai_text, preset_id))
-
-            if cursor.rowcount > 0:
-                return jsonify({"success": True})
-            else:
-                return jsonify({"success": False, "error": "画师串不存在"}), 404
+        return jsonify({"success": True, "data": get_preset_by_id(preset_id)})
+    except sqlite3.IntegrityError:
+        return jsonify({"success": False, "error": "画师串名称已存在"}), 409
     except Exception as e:
         logging.error(f"更新画师串失败: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
+
 @app.route('/api/presets/<int:preset_id>', methods=['DELETE'])
 @login_required
 def api_delete_preset(preset_id):
-    """删除画师串"""
+    """删除画师串、图片记录与图片文件"""
     try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM artist_presets WHERE id = ?", (preset_id,))
-            if cursor.rowcount > 0:
-                return jsonify({"success": True})
-            else:
-                return jsonify({"success": False, "error": "画师串不存在"}), 404
+        filenames = delete_preset_record(preset_id)
+        if filenames is None:
+            return jsonify({"success": False, "error": "画师串不存在"}), 404
+
+        for filename in filenames:
+            path = PRESET_IMAGES_DIR / filename
+            if path.exists():
+                try:
+                    path.unlink()
+                except OSError as e:
+                    logging.warning(f"删除画师串参考图失败 {filename}: {e}")
+
+        return jsonify({"success": True})
     except Exception as e:
         logging.error(f"删除画师串失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/presets/<int:preset_id>/images', methods=['POST'])
+@login_required
+def api_upload_preset_images(preset_id):
+    """批量上传画师串参考图（最多 5 张）"""
+    try:
+        if not get_preset_by_id(preset_id):
+            return jsonify({"success": False, "error": "画师串不存在"}), 404
+
+        files = request.files.getlist('files')
+        if not files:
+            single = request.files.get('file')
+            files = [single] if single else []
+
+        if not files:
+            return jsonify({"success": False, "error": "未上传文件"}), 400
+
+        current_count = count_preset_images(preset_id)
+        if current_count + len(files) > MAX_PRESET_IMAGES:
+            return jsonify({
+                "success": False,
+                "error": f"参考图最多 {MAX_PRESET_IMAGES} 张",
+            }), 400
+
+        created = []
+        failed = []
+        for file in files:
+            filename, error = _save_preset_image(file, preset_id)
+            if not filename:
+                failed.append({"name": file.filename or '未命名', "error": error or '上传失败'})
+                continue
+            try:
+                created.append(add_preset_image(preset_id, filename))
+            except Exception as e:
+                path = PRESET_IMAGES_DIR / filename
+                if path.exists():
+                    path.unlink()
+                failed.append({"name": file.filename or '未命名', "error": str(e)})
+
+        if not created and failed:
+            return jsonify({
+                "success": False,
+                "error": failed[0]['error'],
+                "data": {"images": [], "failed": failed},
+            }), 400
+
+        return jsonify({
+            "success": True,
+            "data": {"images": created, "failed": failed},
+        })
+    except Exception as e:
+        logging.error(f"上传画师串参考图失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/presets/<int:preset_id>/images/<int:image_id>', methods=['DELETE'])
+@login_required
+def api_delete_preset_image(preset_id, image_id):
+    """删除单张画师串参考图"""
+    try:
+        filename = delete_preset_image(preset_id, image_id)
+        if not filename:
+            return jsonify({"success": False, "error": "参考图不存在"}), 404
+
+        path = PRESET_IMAGES_DIR / filename
+        if path.exists():
+            try:
+                path.unlink()
+            except OSError as e:
+                logging.warning(f"删除画师串参考图失败 {filename}: {e}")
+
+        return jsonify({"success": True})
+    except Exception as e:
+        logging.error(f"删除画师串参考图失败: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 # -------------------------------

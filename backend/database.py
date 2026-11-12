@@ -138,6 +138,51 @@ def init_db():
             )
         """)
 
+        # 画师串迁移：单格式 + 文本 + 多张参考图
+        preset_columns = {
+            row['name'] for row in cursor.execute("PRAGMA table_info(artist_presets)").fetchall()
+        }
+        if 'noob_text' not in preset_columns:
+            cursor.execute("ALTER TABLE artist_presets ADD COLUMN noob_text TEXT DEFAULT ''")
+        if 'nai_text' not in preset_columns:
+            cursor.execute("ALTER TABLE artist_presets ADD COLUMN nai_text TEXT DEFAULT ''")
+        if 'format' not in preset_columns:
+            cursor.execute(
+                "ALTER TABLE artist_presets ADD COLUMN format TEXT NOT NULL DEFAULT 'noob'"
+            )
+        if 'text' not in preset_columns:
+            cursor.execute("ALTER TABLE artist_presets ADD COLUMN text TEXT DEFAULT ''")
+
+        # 旧数据回填：优先 NOOB，其次 NAI；只回填空 text，避免覆盖新数据
+        cursor.execute("""
+            UPDATE artist_presets
+            SET text = CASE
+                    WHEN TRIM(COALESCE(noob_text, '')) <> '' THEN noob_text
+                    ELSE COALESCE(nai_text, '')
+                END,
+                format = CASE
+                    WHEN TRIM(COALESCE(noob_text, '')) <> '' THEN 'noob'
+                    ELSE 'nai'
+                END
+            WHERE TRIM(COALESCE(text, '')) = ''
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS artist_preset_images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                preset_id INTEGER NOT NULL,
+                filename TEXT NOT NULL,
+                display_order INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (preset_id) REFERENCES artist_presets(id) ON DELETE CASCADE
+            )
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_preset_images_preset
+            ON artist_preset_images(preset_id, display_order)
+        """)
+
         # 确保有"未分类"选项
         cursor.execute("SELECT id FROM categories WHERE name = '未分类'")
         if not cursor.fetchone():
@@ -647,6 +692,217 @@ def batch_update_artists(updates: List[Dict[str, Any]]) -> int:
                 updated_count += 1
 
         return updated_count
+
+
+# -------------------------------
+# 画师串（预设）CRUD
+# -------------------------------
+
+PRESET_COLUMNS = "id, name, description, format, text, created_at, updated_at"
+
+
+def _serialize_preset(row: sqlite3.Row) -> Dict[str, Any]:
+    preset = dict(row)
+    preset['format'] = preset.get('format') or 'noob'
+    preset['text'] = preset.get('text') or ''
+    preset['description'] = preset.get('description') or ''
+    return preset
+
+
+def _attach_preset_images(cursor, presets: List[Dict[str, Any]]) -> None:
+    if not presets:
+        return
+
+    preset_ids = [preset['id'] for preset in presets]
+    placeholders = ','.join('?' for _ in preset_ids)
+    cursor.execute(
+        f"""
+        SELECT id, preset_id, filename, display_order
+        FROM artist_preset_images
+        WHERE preset_id IN ({placeholders})
+        ORDER BY display_order ASC, id ASC
+        """,
+        preset_ids,
+    )
+
+    images_by_preset: Dict[int, List[Dict[str, Any]]] = {}
+    for row in cursor.fetchall():
+        images_by_preset.setdefault(row['preset_id'], []).append({
+            'id': row['id'],
+            'filename': row['filename'],
+            'display_order': row['display_order'],
+        })
+
+    for preset in presets:
+        preset['images'] = images_by_preset.get(preset['id'], [])
+
+
+def get_all_presets() -> List[Dict[str, Any]]:
+    """获取所有画师串，附带参考图列表"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT {PRESET_COLUMNS}
+            FROM artist_presets
+            ORDER BY updated_at DESC, id DESC
+        """)
+        presets = [_serialize_preset(row) for row in cursor.fetchall()]
+        _attach_preset_images(cursor, presets)
+        return presets
+
+
+def get_preset_by_id(preset_id: int) -> Optional[Dict[str, Any]]:
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT {PRESET_COLUMNS} FROM artist_presets WHERE id = ?",
+            (preset_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        preset = _serialize_preset(row)
+        _attach_preset_images(cursor, [preset])
+        return preset
+
+
+def create_preset(name: str, description: str, format: str, text: str) -> Dict[str, Any]:
+    """创建画师串，同时双写旧列以兼容旧版本"""
+    noob_text = text if format == 'noob' else ''
+    nai_text = text if format == 'nai' else ''
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO artist_presets (name, description, format, text, noob_text, nai_text)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (name, description, format, text, noob_text, nai_text))
+        preset_id = cursor.lastrowid
+
+    preset = get_preset_by_id(preset_id)
+    if not preset:
+        raise RuntimeError('创建画师串后读取失败')
+    return preset
+
+
+def update_preset_record(
+    preset_id: int, name: str, description: str, format: str, text: str
+) -> bool:
+    """更新画师串，同时双写旧列以兼容旧版本"""
+    noob_text = text if format == 'noob' else ''
+    nai_text = text if format == 'nai' else ''
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE artist_presets
+            SET name = ?, description = ?, format = ?, text = ?,
+                noob_text = ?, nai_text = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (name, description, format, text, noob_text, nai_text, preset_id))
+        return cursor.rowcount > 0
+
+
+def delete_preset_record(preset_id: int) -> Optional[List[str]]:
+    """删除画师串与图片记录，返回需要清理的图片文件名；不存在返回 None"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT filename FROM artist_preset_images WHERE preset_id = ?",
+            (preset_id,),
+        )
+        filenames = [row['filename'] for row in cursor.fetchall()]
+
+        cursor.execute("DELETE FROM artist_preset_images WHERE preset_id = ?", (preset_id,))
+        cursor.execute("DELETE FROM artist_presets WHERE id = ?", (preset_id,))
+
+        if cursor.rowcount == 0:
+            return None
+        return filenames
+
+
+def count_preset_images(preset_id: int) -> int:
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) AS count FROM artist_preset_images WHERE preset_id = ?",
+            (preset_id,),
+        )
+        return int(cursor.fetchone()['count'])
+
+
+def add_preset_image(preset_id: int, filename: str) -> Dict[str, Any]:
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT COALESCE(MAX(display_order), -1) + 1 AS next_order
+            FROM artist_preset_images
+            WHERE preset_id = ?
+            """,
+            (preset_id,),
+        )
+        display_order = int(cursor.fetchone()['next_order'])
+        cursor.execute("""
+            INSERT INTO artist_preset_images (preset_id, filename, display_order)
+            VALUES (?, ?, ?)
+        """, (preset_id, filename, display_order))
+        image_id = cursor.lastrowid
+
+    return {
+        'id': image_id,
+        'filename': filename,
+        'display_order': display_order,
+    }
+
+
+def delete_preset_image(preset_id: int, image_id: int) -> Optional[str]:
+    """删除单张参考图记录，返回文件名；不存在返回 None"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT filename FROM artist_preset_images WHERE id = ? AND preset_id = ?",
+            (image_id, preset_id),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        cursor.execute(
+            "DELETE FROM artist_preset_images WHERE id = ? AND preset_id = ?",
+            (image_id, preset_id),
+        )
+        return row['filename']
+
+
+def upsert_preset_by_name(name: str, format: str, text: str) -> tuple:
+    """
+    导入用：按名称更新或创建画师串。
+    更新时保留现有描述与参考图，只覆盖格式与内容。
+    返回 (action, preset_id)，action 为 'created' / 'updated'。
+    """
+    noob_text = text if format == 'noob' else ''
+    nai_text = text if format == 'nai' else ''
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM artist_presets WHERE name = ?", (name,))
+        existing = cursor.fetchone()
+
+        if existing:
+            preset_id = existing['id']
+            cursor.execute("""
+                UPDATE artist_presets
+                SET format = ?, text = ?, noob_text = ?, nai_text = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (format, text, noob_text, nai_text, preset_id))
+            return ('updated', preset_id)
+
+        cursor.execute("""
+            INSERT INTO artist_presets (name, description, format, text, noob_text, nai_text)
+            VALUES (?, '', ?, ?, ?, ?)
+        """, (name, format, text, noob_text, nai_text))
+        return ('created', cursor.lastrowid)
 
 
 if __name__ == "__main__":

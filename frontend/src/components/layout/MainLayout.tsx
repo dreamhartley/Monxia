@@ -62,7 +62,7 @@ export function MainLayout({ children }: MainLayoutProps) {
   }
 
   // 导航菜单内容（复用于桌面端侧边栏和移动端抽屉）
-  const NavContent = ({ inSheet = false }: { inSheet?: boolean }) => (
+  const renderNavContent = (inSheet = false) => (
     <>
       <nav className={cn('space-y-1', inSheet ? 'px-0' : 'px-2')}>
         {navItems.map((item) => {
@@ -150,7 +150,7 @@ export function MainLayout({ children }: MainLayoutProps) {
               </SheetHeader>
 
               <ScrollArea className="flex-1 py-4 px-2">
-                <NavContent inSheet />
+                {renderNavContent(true)}
               </ScrollArea>
 
               <div className="border-t border-border/50 p-2">
@@ -212,7 +212,7 @@ export function MainLayout({ children }: MainLayoutProps) {
 
           {/* 导航菜单 */}
           <ScrollArea className="flex-1 py-4">
-            <NavContent />
+            {renderNavContent()}
           </ScrollArea>
 
           {/* 底部用户区域 */}
