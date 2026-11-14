@@ -168,6 +168,7 @@ function parseSegment(segment: string): ArtistTag[] {
   if (!trimmed) return []
 
   // NAI 权重组：1.2::artist:a, artist:b::
+  // 兼容以数字结尾的单人写法补出的逗号：0.7::artist:x4824,::
   const naiGroup = trimmed.match(/^(\d+(?:\.\d+)?)::([\s\S]*)::$/)
   if (naiGroup) {
     const weight = parseWeight(naiGroup[1])
@@ -243,10 +244,20 @@ function formatNoobTag(tag: ArtistTag): string {
   return `(${name}:${formatWeight(tag.weight)})`
 }
 
+/** NAI 权重组里，内容以数字结尾时会和收尾的 `::` 粘连而被当成权重参数 */
+function endsWithDigit(name: string): boolean {
+  return /\d$/.test(name.trim())
+}
+
+/** 拼接 NAI 权重组：内容以数字结尾时补一个逗号把数字与 `::` 隔开 */
+function formatNaiGroup(weight: number, names: string[], lastTag: ArtistTag): string {
+  const tail = endsWithDigit(lastTag.name) ? ',' : ''
+  return `${formatWeight(weight)}::${names.join(', ')}${tail}::`
+}
+
 function formatNaiTag(tag: ArtistTag): string {
-  const name = `artist:${tag.name}`
-  if (tag.weight === 1) return name
-  return `${formatWeight(tag.weight)}::${name}::`
+  if (tag.weight === 1) return `artist:${tag.name}`
+  return formatNaiGroup(tag.weight, [`artist:${tag.name}`], tag)
 }
 
 /** 生成指定格式的完整字符串；NAI 会把连续同权重标签合并成一组 */
@@ -272,7 +283,8 @@ export function formatArtistString(tags: ArtistTag[], format: ArtistFormat): str
       group.push(`artist:${tags[index].name}`)
       index += 1
     }
-    parts.push(`${formatWeight(tag.weight)}::${group.join(', ')}::`)
+    // 以组内最后一个画师判断：1.1::artist:x4824, artist:y777,:: / 1.1::artist:x4824, artist:abc::
+    parts.push(formatNaiGroup(tag.weight, group, tags[index - 1]))
   }
 
   return parts.join(', ')
