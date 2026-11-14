@@ -117,9 +117,6 @@ export function PresetDetailDialog({ preset, onClose, onEdit }: PresetDetailDial
             参考图仅保存在本机，不参与导出
           </span>
           <div className="ml-auto flex items-center gap-2">
-            <Button type="button" variant="outline" onClick={closeDetail}>
-              关闭
-            </Button>
             <Button type="button" onClick={() => onEdit(preset)}>
               <Pencil className="mr-1.5 h-4 w-4" />
               编辑
