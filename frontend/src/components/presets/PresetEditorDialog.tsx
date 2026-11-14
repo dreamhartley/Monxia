@@ -42,8 +42,11 @@ import {
 import {
   clearPresetDraft,
   getPresetDraft,
+  hasDraftContent,
   updatePresetDraft,
   type DraftImageRef,
+  type PresetDraftOrigin,
+  type PresetDraftV3,
 } from '@/lib/presetDraft'
 import { deleteDraftImage, getDraftImage, putDraftImage } from '@/lib/draftImageStore'
 import { blobToFile, compressImageFile, revokePreviewUrl } from '@/lib/image'
@@ -62,7 +65,6 @@ interface PresetEditorDialogProps {
 
 interface EditorImage extends GalleryImage {
   blob?: Blob
-  file?: File
   existingId?: number
   draftKey?: string
 }
@@ -75,6 +77,10 @@ interface InitialState {
   tags: ArtistTag[]
   images: EditorImage[]
   draftRefs: DraftImageRef[]
+  removedImageIds: number[]
+  /** 编辑模式的原始快照，用于放弃修改 / 脏检查 */
+  origin: PresetDraftOrigin | null
+  presetId: number | null
 }
 
 const MAX_IMAGES = 5
@@ -92,8 +98,52 @@ function tagsEqual(a: ArtistTag[], b: ArtistTag[]): boolean {
   return a.every((tag, index) => tag.name === b[index].name && tag.weight === b[index].weight)
 }
 
+function originFromPreset(preset: Preset): PresetDraftOrigin {
+  return {
+    name: preset.name,
+    description: preset.description,
+    format: preset.format,
+    text: preset.text,
+    images: preset.images.map((image) => ({
+      id: image.id,
+      filename: image.filename,
+      name: `参考图 ${image.id}`,
+    })),
+  }
+}
+
+function existingImagesOfPreset(preset: Preset, removedImageIds: number[]): EditorImage[] {
+  const removed = new Set(removedImageIds)
+  return preset.images
+    .filter((image) => !removed.has(image.id))
+    .map((image) => ({
+      key: `existing-${image.id}`,
+      url: presetImageUrl(image.filename),
+      name: `参考图 ${image.id}`,
+      existingId: image.id,
+    }))
+}
+
 function buildInitial(mode: 'create' | 'edit', preset: Preset | null): InitialState {
+  const draft = getPresetDraft()
+
   if (mode === 'edit' && preset) {
+    const resumable = draft && draft.mode === 'edit' && draft.presetId === preset.id
+    if (resumable && draft) {
+      return {
+        name: draft.name,
+        description: draft.description,
+        format: draft.format,
+        text: draft.text,
+        tags: draft.tags,
+        images: existingImagesOfPreset(preset, draft.removedImageIds),
+        draftRefs: draft.images,
+        removedImageIds: draft.removedImageIds,
+        origin: draft.origin ?? originFromPreset(preset),
+        presetId: preset.id,
+      }
+    }
+
     const parsed = parseArtistString(preset.text)
     return {
       name: preset.name,
@@ -101,25 +151,26 @@ function buildInitial(mode: 'create' | 'edit', preset: Preset | null): InitialSt
       format: preset.format,
       text: preset.text,
       tags: parsed.tags,
-      images: preset.images.map((image) => ({
-        key: `existing-${image.id}`,
-        url: presetImageUrl(image.filename),
-        name: `参考图 ${image.id}`,
-        existingId: image.id,
-      })),
+      images: existingImagesOfPreset(preset, []),
       draftRefs: [],
+      removedImageIds: [],
+      origin: originFromPreset(preset),
+      presetId: preset.id,
     }
   }
 
-  const draft = getPresetDraft()
+  const source = draft && draft.mode === 'create' ? draft : null
   return {
-    name: draft?.name ?? '',
-    description: draft?.description ?? '',
-    format: draft?.format ?? 'noob',
-    text: draft?.text ?? '',
-    tags: draft?.tags ?? [],
+    name: source?.name ?? '',
+    description: source?.description ?? '',
+    format: source?.format ?? 'noob',
+    text: source?.text ?? '',
+    tags: source?.tags ?? [],
     images: [],
-    draftRefs: draft?.images ?? [],
+    draftRefs: source?.images ?? [],
+    removedImageIds: [],
+    origin: null,
+    presetId: null,
   }
 }
 
@@ -147,9 +198,9 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
 
   const [images, setImages] = useState<EditorImage[]>(initial.images)
   const [draftRefs, setDraftRefs] = useState<DraftImageRef[]>(initial.draftRefs)
-  const [imagesLoaded, setImagesLoaded] = useState(mode === 'edit')
+  const [removedImageIds, setRemovedImageIds] = useState<number[]>(initial.removedImageIds)
+  const [imagesLoaded, setImagesLoaded] = useState(initial.draftRefs.length === 0)
   const [imageBusy, setImageBusy] = useState(false)
-  const [removedImageIds, setRemovedImageIds] = useState<number[]>([])
   const [previewImage, setPreviewImage] = useState<GalleryImage | null>(null)
 
   const [saving, setSaving] = useState(false)
@@ -160,15 +211,20 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const urlsRef = useRef<Set<string>>(new Set())
 
-  // 草稿图片从 IndexedDB 恢复
+  const origin = initial.origin
+  const presetId = initial.presetId
+  const isEditDraft = mode === 'edit' && origin !== null && presetId !== null
+
+  // 草稿图片从 IndexedDB 恢复（新建与编辑共用）
   useEffect(() => {
-    if (mode !== 'create') return
+    const refs = initial.draftRefs
+    if (refs.length === 0) return
     let cancelled = false
 
     const load = async () => {
       const loaded: EditorImage[] = []
-      const refs: DraftImageRef[] = []
-      for (const ref of initial.draftRefs) {
+      const validRefs: DraftImageRef[] = []
+      for (const ref of refs) {
         const stored = await getDraftImage(ref.key)
         if (!stored) continue
         const url = URL.createObjectURL(stored.blob)
@@ -180,7 +236,7 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
           blob: stored.blob,
           draftKey: ref.key,
         })
-        refs.push({ key: ref.key, name: ref.name, width: stored.width, height: stored.height })
+        validRefs.push({ key: ref.key, name: ref.name, width: stored.width, height: stored.height })
       }
 
       if (cancelled) {
@@ -191,8 +247,8 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
         return
       }
 
-      setImages(loaded)
-      setDraftRefs(refs)
+      setImages((prev) => [...prev, ...loaded])
+      setDraftRefs(validRefs)
       setImagesLoaded(true)
     }
 
@@ -200,7 +256,7 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
     return () => {
       cancelled = true
     }
-  }, [mode, initial])
+  }, [initial])
 
   // 卸载时释放所有预览 URL
   useEffect(() => {
@@ -224,26 +280,40 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
     return () => window.clearTimeout(timer)
   }, [text])
 
-  const hasContent =
-    name.trim() !== '' ||
-    description.trim() !== '' ||
-    tags.length > 0 ||
-    images.length > 0
+  /** 当前编辑内容对应的草稿快照 */
+  const buildDraft = (): PresetDraftV3 => ({
+    version: 3,
+    mode: isEditDraft ? 'edit' : 'create',
+    presetId: isEditDraft ? presetId : null,
+    origin: isEditDraft ? origin : null,
+    name,
+    description,
+    format,
+    text,
+    tags,
+    images: draftRefs,
+    removedImageIds: isEditDraft ? removedImageIds : [],
+    updatedAt: new Date().toISOString(),
+  })
 
-  // 创建模式下自动保存草稿
+  const hasContent = hasDraftContent(buildDraft())
+
+  // 新建与编辑都自动保存草稿
   useEffect(() => {
-    if (mode !== 'create' || !imagesLoaded) return
+    if (!imagesLoaded) return
 
     const timer = window.setTimeout(() => {
       if (!hasContent) {
-        if (getPresetDraft()) void clearPresetDraft()
+        // 新建时没有内容就不留草稿；编辑时保留快照，退出时再加清理
+        if (!isEditDraft && getPresetDraft()) void clearPresetDraft()
         return
       }
-      updatePresetDraft({ name, description, format, text, tags, images: draftRefs })
+      updatePresetDraft(buildDraft())
     }, 400)
 
     return () => window.clearTimeout(timer)
-  }, [mode, imagesLoaded, hasContent, name, description, format, text, tags, draftRefs])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imagesLoaded, hasContent, name, description, format, text, tags, draftRefs, removedImageIds])
 
   const applyTags = (next: ArtistTag[]) => {
     setTags(next)
@@ -355,34 +425,22 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
         const url = URL.createObjectURL(compressed.blob)
         urlsRef.current.add(url)
 
-        if (mode === 'create') {
-          const key = makeKey()
-          const saved = await putDraftImage(key, {
-            blob: compressed.blob,
-            name: file.name,
-            width: compressed.width,
-            height: compressed.height,
-          })
-          if (!saved) storageFailed = true
-          setImages((prev) => [
-            ...prev,
-            { key, url, name: file.name, blob: compressed.blob, draftKey: key },
-          ])
-          setDraftRefs((prev) => [
-            ...prev,
-            { key, name: file.name, width: compressed.width, height: compressed.height },
-          ])
-        } else {
-          setImages((prev) => [
-            ...prev,
-            {
-              key: makeKey(),
-              url,
-              name: file.name,
-              file: blobToFile(compressed.blob, file.name),
-            },
-          ])
-        }
+        const key = makeKey()
+        const saved = await putDraftImage(key, {
+          blob: compressed.blob,
+          name: file.name,
+          width: compressed.width,
+          height: compressed.height,
+        })
+        if (!saved) storageFailed = true
+        setImages((prev) => [
+          ...prev,
+          { key, url, name: file.name, blob: compressed.blob, draftKey: key },
+        ])
+        setDraftRefs((prev) => [
+          ...prev,
+          { key, name: file.name, width: compressed.width, height: compressed.height },
+        ])
       } catch {
         showToast(`${file.name} 处理失败`, 'error')
       }
@@ -484,14 +542,14 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
         return
       }
 
-      const newImages = images.filter((image) => image.file)
+      const uploadable = images.filter((image) => image.blob)
       let failures = 0
-      if (newImages.length > 0) {
+      if (uploadable.length > 0) {
         const uploadRes = await presetApi.uploadImages(
           preset.id,
-          newImages.map((image) => image.file as File)
+          uploadable.map((image) => blobToFile(image.blob as Blob, image.name || 'reference.jpg'))
         )
-        if (!uploadRes.success) failures += newImages.length
+        if (!uploadRes.success) failures += uploadable.length
         else failures += uploadRes.data?.failed?.length ?? 0
       }
 
@@ -500,6 +558,7 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
         if (!deleteRes.success) failures += 1
       }
 
+      await clearPresetDraft()
       notifySaved()
       onClose()
       if (failures > 0) {
@@ -520,6 +579,9 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
     try {
       const res = await presetApi.delete(preset.id)
       if (res.success) {
+        if (presetId !== null && getPresetDraft()?.presetId === presetId) {
+          await clearPresetDraft()
+        }
         notifySaved()
         onClose()
         showToast('画师串已删除', 'success')
@@ -534,6 +596,7 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
     }
   }
 
+  /** 清空草稿：新建模式清空所有输入，编辑模式放弃改动并恢复原始内容 */
   const handleClearDraft = async () => {
     setShowClearConfirm(false)
     await clearPresetDraft()
@@ -542,28 +605,47 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
       revokePreviewUrl(image.url)
     }
     urlsRef.current.clear()
-    setImages([])
     setDraftRefs([])
     setRemovedImageIds([])
+    setSelectedIndex(null)
+    setWarnings([])
+    setError(null)
+
+    if (isEditDraft && origin && preset) {
+      const parsed = parseArtistString(origin.text)
+      setName(origin.name)
+      setDescription(origin.description)
+      setFormat(origin.format)
+      setText(origin.text)
+      setTags(parsed.tags)
+      setDetected(detectArtistFormat(origin.text))
+      setImages(
+        origin.images.map((image) => ({
+          key: `existing-${image.id}`,
+          url: presetImageUrl(image.filename),
+          name: image.name,
+          existingId: image.id,
+        }))
+      )
+      showToast('已放弃修改，草稿已清空', 'success')
+      return
+    }
+
+    setImages([])
     setName('')
     setDescription('')
     setFormat('noob')
     setText('')
     setTags([])
-    setSelectedIndex(null)
-    setWarnings([])
     setDetected('plain')
-    setError(null)
     showToast('草稿已清空', 'success')
   }
 
   const handleClose = () => {
-    if (mode === 'create') {
-      if (hasContent) {
-        updatePresetDraft({ name, description, format, text, tags, images: draftRefs })
-      } else if (getPresetDraft()) {
-        void clearPresetDraft()
-      }
+    if (hasContent) {
+      updatePresetDraft(buildDraft())
+    } else if (getPresetDraft()) {
+      void clearPresetDraft()
     }
     onClose()
   }
@@ -592,7 +674,12 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
         }}
       >
         <DialogHeader className="border-b px-6 py-4">
-          <DialogTitle>{mode === 'edit' ? '编辑画师串' : '创建画师串'}</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            {mode === 'edit' ? '编辑画师串' : '创建画师串'}
+            <Badge variant="outline" className="text-[10px] font-normal">
+              草稿自动保存
+            </Badge>
+          </DialogTitle>
         </DialogHeader>
 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
@@ -754,17 +841,18 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
         </div>
 
         <DialogFooter className="flex-row items-center justify-between gap-2 border-t px-6 py-3 sm:justify-between">
-          {mode === 'edit' ? (
-            <Button
-              type="button"
-              variant="destructive"
-              onClick={() => setShowDeleteConfirm(true)}
-              disabled={saving}
-            >
-              <Trash2 className="mr-1.5 h-4 w-4" />
-              删除
-            </Button>
-          ) : (
+          <div className="flex items-center gap-2">
+            {mode === 'edit' && (
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={() => setShowDeleteConfirm(true)}
+                disabled={saving}
+              >
+                <Trash2 className="mr-1.5 h-4 w-4" />
+                删除
+              </Button>
+            )}
             <Button
               type="button"
               variant="outline"
@@ -772,9 +860,9 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
               disabled={!hasContent || saving}
             >
               <RotateCcw className="mr-1.5 h-4 w-4" />
-              清空草稿
+              {mode === 'edit' ? '放弃修改' : '清空草稿'}
             </Button>
-          )}
+          </div>
 
           <div className="flex items-center gap-2">
             <Button type="button" variant="outline" onClick={handleClose} disabled={saving}>
@@ -791,9 +879,11 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
       <AlertDialog open={showClearConfirm} onOpenChange={setShowClearConfirm}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>确认清空草稿</AlertDialogTitle>
+            <AlertDialogTitle>{mode === 'edit' ? '确认放弃本次修改' : '确认清空草稿'}</AlertDialogTitle>
             <AlertDialogDescription>
-              将清除名称、描述、画师串、格式与全部参考图，且不可恢复。
+              {mode === 'edit'
+                ? '将丢弃本次编辑的全部改动，恢复为已保存的画师串内容，且不可恢复。'
+                : '将清除名称、描述、画师串、格式与全部参考图，且不可恢复。'}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -802,7 +892,7 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
               onClick={() => void handleClearDraft()}
               className="bg-destructive hover:bg-destructive/90"
             >
-              清空
+              {mode === 'edit' ? '放弃修改' : '清空'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

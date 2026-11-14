@@ -14,7 +14,7 @@ export default function PresetsPage() {
   const [loading, setLoading] = useState(true)
   const [detailPreset, setDetailPreset] = useState<Preset | null>(null)
   const draft = usePresetDraft()
-  const { openCreate, openEdit, revision } = usePresetEditor()
+  const { openDraft, openEdit, revision } = usePresetEditor()
   const { showToast } = useToast()
 
   useEffect(() => {
@@ -43,6 +43,7 @@ export default function PresetsPage() {
   }, [revision, showToast])
 
   const hasDraft = hasDraftContent(draft)
+  const editDraft = hasDraft && draft?.mode === 'edit'
 
   return (
     <div className="flex h-full flex-1 flex-col">
@@ -53,9 +54,11 @@ export default function PresetsPage() {
             管理常用的画师组合预设
           </p>
         </div>
-        <Button onClick={openCreate} className="shrink-0 gap-2">
+        <Button onClick={openDraft} className="shrink-0 gap-2">
           <Plus className="h-4 w-4" />
-          <span className="hidden sm:inline">{hasDraft ? '继续编辑草稿' : '创建画师串'}</span>
+          <span className="hidden sm:inline">
+            {hasDraft ? (editDraft ? '继续编辑' : '继续编辑草稿') : '创建画师串'}
+          </span>
           <span className="sm:hidden">{hasDraft ? '草稿' : '创建'}</span>
           {hasDraft && (
             <span className="ml-0.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary-foreground/20 px-1 text-[10px] font-semibold">

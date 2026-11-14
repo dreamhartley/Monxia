@@ -1,7 +1,12 @@
 /**
  * 画师串草稿：元数据存 localStorage，参考图 Blob 存 IndexedDB。
  *
- * 旧版草稿（noobTags / naiTags 两套数组）会在首次读取时自动迁移到 v2。
+ * v3 起区分两种草稿模式：
+ * - create：新建画师串，任意字段有内容即算草稿；
+ * - edit：编辑已有画师串，会同时保存原始快照，只有存在未保存改动时才算草稿，
+ *   「清空草稿」即放弃改动并恢复原始内容。
+ *
+ * 旧版草稿（v1 的 noobTags / naiTags、v2 的单模式结构）会在首次读取时自动迁移。
  */
 import { useSyncExternalStore } from 'react'
 import {
@@ -14,6 +19,8 @@ import { clearDraftImages, deleteDraftImages } from './draftImageStore'
 
 export const PRESET_DRAFT_KEY = 'preset_draft'
 
+export type PresetDraftMode = 'create' | 'edit'
+
 export interface DraftImageRef {
   key: string
   name: string
@@ -21,33 +28,70 @@ export interface DraftImageRef {
   height?: number
 }
 
-export interface PresetDraftV2 {
-  version: 2
+/** 编辑会话开始时画师串已有的参考图（来自服务端，不复制到 IndexedDB） */
+export interface DraftPresetImage {
+  id: number
+  filename: string
+  name: string
+}
+
+/** 编辑模式的原始快照：用于脏检查与「清空草稿」回填 */
+export interface PresetDraftOrigin {
+  name: string
+  description: string
+  format: ArtistFormat
+  text: string
+  images: DraftPresetImage[]
+}
+
+export interface PresetDraftV3 {
+  version: 3
+  mode: PresetDraftMode
+  /** 编辑模式下正在编辑的画师串 id */
+  presetId: number | null
+  /** 编辑模式的原始快照 */
+  origin: PresetDraftOrigin | null
   name: string
   description: string
   format: ArtistFormat
   text: string
   tags: ArtistTag[]
+  /** 本轮新添加的参考图（Blob 存在 IndexedDB） */
   images: DraftImageRef[]
+  /** 编辑模式下被移除的原有参考图 id */
+  removedImageIds: number[]
   updatedAt: string
 }
 
 interface LegacyDraft {
+  version?: number
+  mode?: PresetDraftMode
+  presetId?: number | null
+  origin?: unknown
   name?: string
   description?: string
+  format?: string
+  text?: string
+  images?: unknown
+  removedImageIds?: unknown
+  updatedAt?: string
   noobTags?: ArtistTag[]
   naiTags?: ArtistTag[]
 }
 
-export function emptyDraft(): PresetDraftV2 {
+export function emptyDraft(): PresetDraftV3 {
   return {
-    version: 2,
+    version: 3,
+    mode: 'create',
+    presetId: null,
+    origin: null,
     name: '',
     description: '',
     format: 'noob',
     text: '',
     tags: [],
     images: [],
+    removedImageIds: [],
     updatedAt: new Date().toISOString(),
   }
 }
@@ -90,18 +134,72 @@ function normalizeImages(images: unknown): DraftImageRef[] {
   return result
 }
 
-function migrateDraft(raw: LegacyDraft & Partial<PresetDraftV2>): PresetDraftV2 | null {
-  if (raw.version === 2 && Array.isArray(raw.tags)) {
+function normalizeIds(ids: unknown): number[] {
+  if (!Array.isArray(ids)) return []
+  const seen = new Set<number>()
+  const result: number[] = []
+  for (const item of ids) {
+    if (typeof item !== 'number' || !Number.isFinite(item)) continue
+    if (seen.has(item)) continue
+    seen.add(item)
+    result.push(item)
+  }
+  return result
+}
+
+function normalizeOrigin(origin: unknown): PresetDraftOrigin | null {
+  if (!origin || typeof origin !== 'object') return null
+  const raw = origin as Partial<PresetDraftOrigin>
+  const images: DraftPresetImage[] = []
+  if (Array.isArray(raw.images)) {
+    for (const item of raw.images) {
+      if (!item || typeof item !== 'object') continue
+      const candidate = item as Partial<DraftPresetImage>
+      if (typeof candidate.id !== 'number' || !Number.isFinite(candidate.id)) continue
+      if (typeof candidate.filename !== 'string' || !candidate.filename) continue
+      images.push({
+        id: candidate.id,
+        filename: candidate.filename,
+        name:
+          typeof candidate.name === 'string' && candidate.name
+            ? candidate.name
+            : `参考图 ${candidate.id}`,
+      })
+    }
+  }
+  return {
+    name: typeof raw.name === 'string' ? raw.name : '',
+    description: typeof raw.description === 'string' ? raw.description : '',
+    format: raw.format === 'nai' ? 'nai' : 'noob',
+    text: typeof raw.text === 'string' ? raw.text : '',
+    images,
+  }
+}
+
+function migrateDraft(raw: LegacyDraft & Partial<PresetDraftV3>): PresetDraftV3 | null {
+  const rawVersion: number | undefined = raw.version
+  if ((rawVersion === 2 || rawVersion === 3) && Array.isArray(raw.tags)) {
     const tags = normalizeTags(raw.tags)
     const format: ArtistFormat = raw.format === 'nai' ? 'nai' : 'noob'
+    const origin = normalizeOrigin(raw.origin)
+    const presetId =
+      typeof raw.presetId === 'number' && Number.isFinite(raw.presetId) ? raw.presetId : null
+    // 缺少原始快照的编辑草稿无法恢复，按新建草稿处理，避免丢内容
+    const mode: PresetDraftMode =
+      raw.mode === 'edit' && origin && presetId !== null ? 'edit' : 'create'
+
     return {
-      version: 2,
+      version: 3,
+      mode,
+      presetId: mode === 'edit' ? presetId : null,
+      origin: mode === 'edit' ? origin : null,
       name: typeof raw.name === 'string' ? raw.name : '',
       description: typeof raw.description === 'string' ? raw.description : '',
       format,
       text: typeof raw.text === 'string' && raw.text ? raw.text : formatArtistString(tags, format),
       tags,
       images: normalizeImages(raw.images),
+      removedImageIds: mode === 'edit' ? normalizeIds(raw.removedImageIds) : [],
       updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : new Date().toISOString(),
     }
   }
@@ -120,18 +218,22 @@ function migrateDraft(raw: LegacyDraft & Partial<PresetDraftV2>): PresetDraftV2 
   if (!hasContent) return null
 
   return {
-    version: 2,
+    version: 3,
+    mode: 'create',
+    presetId: null,
+    origin: null,
     name: typeof raw.name === 'string' ? raw.name : '',
     description: typeof raw.description === 'string' ? raw.description : '',
     format,
     text: formatArtistString(tags, format),
     tags,
     images: [],
+    removedImageIds: [],
     updatedAt: new Date().toISOString(),
   }
 }
 
-function readFromStorage(): PresetDraftV2 | null {
+function readFromStorage(): PresetDraftV3 | null {
   let rawText: string | null = null
   try {
     rawText = localStorage.getItem(PRESET_DRAFT_KEY)
@@ -141,7 +243,7 @@ function readFromStorage(): PresetDraftV2 | null {
   if (!rawText) return null
 
   try {
-    const raw = JSON.parse(rawText) as LegacyDraft & Partial<PresetDraftV2>
+    const raw = JSON.parse(rawText) as LegacyDraft & Partial<PresetDraftV3>
     const draft = migrateDraft(raw)
     // 迁移后立即回写，避免每次读取都走旧结构
     if (draft) {
@@ -157,21 +259,21 @@ function readFromStorage(): PresetDraftV2 | null {
   }
 }
 
-let cache: PresetDraftV2 | null | undefined
+let cache: PresetDraftV3 | null | undefined
 const listeners = new Set<() => void>()
 
 function emit() {
   for (const listener of listeners) listener()
 }
 
-function ensureLoaded(): PresetDraftV2 | null {
+function ensureLoaded(): PresetDraftV3 | null {
   if (cache === undefined) {
     cache = readFromStorage()
   }
   return cache
 }
 
-export function getPresetDraft(): PresetDraftV2 | null {
+export function getPresetDraft(): PresetDraftV3 | null {
   return ensureLoaded()
 }
 
@@ -180,12 +282,30 @@ function subscribe(listener: () => void): () => void {
   return () => listeners.delete(listener)
 }
 
-export function usePresetDraft(): PresetDraftV2 | null {
+export function usePresetDraft(): PresetDraftV3 | null {
   return useSyncExternalStore(subscribe, getPresetDraft, getPresetDraft)
 }
 
-export function hasDraftContent(draft: PresetDraftV2 | null): boolean {
+/**
+ * 草稿是否值得保留。
+ * 编辑草稿以「与原始快照相比是否有改动」为准：只是打开看一下不会留下草稿。
+ */
+export function hasDraftContent(draft: PresetDraftV3 | null): boolean {
   if (!draft) return false
+
+  if (draft.mode === 'edit') {
+    const origin = draft.origin
+    // 原始快照缺失时按有内容处理，避免误清空
+    if (!origin) return true
+    if (draft.images.length > 0 || draft.removedImageIds.length > 0) return true
+    return (
+      draft.name !== origin.name ||
+      draft.description !== origin.description ||
+      draft.format !== origin.format ||
+      draft.text.trim() !== origin.text.trim()
+    )
+  }
+
   return (
     draft.tags.length > 0 ||
     draft.images.length > 0 ||
@@ -195,17 +315,35 @@ export function hasDraftContent(draft: PresetDraftV2 | null): boolean {
 }
 
 export function updatePresetDraft(
-  patch: Partial<PresetDraftV2> | ((draft: PresetDraftV2) => PresetDraftV2)
+  patch: Partial<PresetDraftV3> | ((draft: PresetDraftV3) => PresetDraftV3)
 ): boolean {
   const current = ensureLoaded() ?? emptyDraft()
   const next = typeof patch === 'function' ? patch(current) : { ...current, ...patch }
-  const normalized: PresetDraftV2 = {
+  const mode: PresetDraftMode = next.mode === 'edit' ? 'edit' : 'create'
+  const presetId =
+    mode === 'edit' && typeof next.presetId === 'number' && Number.isFinite(next.presetId)
+      ? next.presetId
+      : null
+  const origin = mode === 'edit' ? normalizeOrigin(next.origin) : null
+
+  const normalized: PresetDraftV3 = {
     ...emptyDraft(),
     ...next,
-    version: 2,
+    version: 3,
+    // 编辑信息不完整的草稿降级为新建草稿
+    mode: mode === 'edit' && origin && presetId !== null ? 'edit' : 'create',
+    presetId,
+    origin,
     tags: normalizeTags(next.tags),
     images: normalizeImages(next.images),
+    removedImageIds: mode === 'edit' ? normalizeIds(next.removedImageIds) : [],
     updatedAt: new Date().toISOString(),
+  }
+
+  if (normalized.mode === 'create') {
+    normalized.presetId = null
+    normalized.origin = null
+    normalized.removedImageIds = []
   }
 
   cache = normalized
