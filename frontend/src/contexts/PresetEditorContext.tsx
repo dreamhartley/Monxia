@@ -6,6 +6,7 @@ import {
   emptyDraft,
   getPresetDraft,
   hasDraftContent,
+  isDraftModified,
   updatePresetDraft,
   type PresetDraftV3,
 } from '@/lib/presetDraft'
@@ -119,11 +120,12 @@ export function PresetEditorProvider({ children }: { children: React.ReactNode }
     (preset: Preset) => {
       const draft = getPresetDraft()
       // 已经在这个画师串的草稿里，直接续写（保留未保存的改动）
-      if (draft && draft.mode === 'edit' && draft.presetId === preset.id && hasDraftContent(draft)) {
+      if (draft && draft.mode === 'edit' && draft.presetId === preset.id) {
         setRequest((prev) => ({ open: true, mode: 'edit', preset, key: prev.key + 1 }))
         return
       }
-      if (hasDraftContent(draft)) {
+      // 草稿里有未保存的内容（新建内容或编辑改动）才需要确认清空
+      if (draft && isDraftModified(draft)) {
         setPendingEditPreset(preset)
         return
       }
