@@ -288,22 +288,15 @@ export function usePresetDraft(): PresetDraftV3 | null {
 
 /**
  * 草稿是否值得保留。
- * 编辑草稿以「与原始快照相比是否有改动」为准：只是打开看一下不会留下草稿。
+ * - 编辑草稿：只要打开过编辑器就算草稿（即使没有任何改动），方便从右下角回到编辑界面；
+ * - 新建草稿：有实际内容才算草稿。
  */
 export function hasDraftContent(draft: PresetDraftV3 | null): boolean {
   if (!draft) return false
 
   if (draft.mode === 'edit') {
-    const origin = draft.origin
-    // 原始快照缺失时按有内容处理，避免误清空
-    if (!origin) return true
-    if (draft.images.length > 0 || draft.removedImageIds.length > 0) return true
-    return (
-      draft.name !== origin.name ||
-      draft.description !== origin.description ||
-      draft.format !== origin.format ||
-      draft.text.trim() !== origin.text.trim()
-    )
+    // 编辑会话本身即为草稿，原始快照用于「放弃修改」回填
+    return draft.presetId !== null
   }
 
   return (
@@ -311,6 +304,22 @@ export function hasDraftContent(draft: PresetDraftV3 | null): boolean {
     draft.images.length > 0 ||
     draft.name.trim() !== '' ||
     draft.description.trim() !== ''
+  )
+}
+
+/** 草稿是否与原始快照不同（编辑模式下用于判断「放弃修改」是否有意义） */
+export function isDraftModified(draft: PresetDraftV3 | null): boolean {
+  if (!draft) return false
+  if (draft.mode !== 'edit') return hasDraftContent(draft)
+
+  const origin = draft.origin
+  if (!origin) return false
+  if (draft.images.length > 0 || draft.removedImageIds.length > 0) return true
+  return (
+    draft.name !== origin.name ||
+    draft.description !== origin.description ||
+    draft.format !== origin.format ||
+    draft.text.trim() !== origin.text.trim()
   )
 }
 

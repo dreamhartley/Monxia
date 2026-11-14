@@ -43,6 +43,7 @@ import {
   clearPresetDraft,
   getPresetDraft,
   hasDraftContent,
+  isDraftModified,
   updatePresetDraft,
   type DraftImageRef,
   type PresetDraftOrigin,
@@ -85,6 +86,13 @@ interface InitialState {
 
 const MAX_IMAGES = 5
 const MAX_FILE_SIZE = 15 * 1024 * 1024
+
+/** 权重调节步进与取值范围 */
+const WEIGHT_STEP = 0.05
+const MIN_WEIGHT = 0.05
+const MAX_WEIGHT = 2
+/** 权重显示保留的小数位（0.05 步进需要两位） */
+const WEIGHT_DIGITS = 2
 
 function makeKey(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -297,6 +305,8 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
   })
 
   const hasContent = hasDraftContent(buildDraft())
+  /** 编辑模式下与原始快照是否有差异（决定“放弃修改”是否可用） */
+  const modified = isDraftModified(buildDraft())
 
   // 新建与编辑都自动保存草稿
   useEffect(() => {
@@ -324,7 +334,9 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
     if (selectedIndex === null) return
     const next = tags.map((tag, index) => {
       if (index !== selectedIndex) return tag
-      const weight = Math.max(0.1, Math.min(2, Math.round((tag.weight + delta) * 10) / 10))
+      const raw = Math.max(MIN_WEIGHT, Math.min(MAX_WEIGHT, tag.weight + delta))
+      // 按 0.05 步进并保留两位小数，避免浮点误差累积出 0.30000000000000004
+      const weight = Math.round(raw * 100) / 100
       return { ...tag, weight }
     })
     applyTags(next)
@@ -776,20 +788,20 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
                   variant="outline"
                   size="icon"
                   className="h-7 w-7"
-                  onClick={() => adjustWeight(-0.1)}
+                  onClick={() => adjustWeight(-WEIGHT_STEP)}
                   disabled={selectedIndex === null}
                 >
                   <Minus className="h-3.5 w-3.5" />
                 </Button>
                 <span className="w-12 text-center text-xs text-muted-foreground">
-                  {selectedTag ? selectedTag.weight.toFixed(1) : '—'}
+                  {selectedTag ? selectedTag.weight.toFixed(WEIGHT_DIGITS) : '—'}
                 </span>
                 <Button
                   type="button"
                   variant="outline"
                   size="icon"
                   className="h-7 w-7"
-                  onClick={() => adjustWeight(0.1)}
+                  onClick={() => adjustWeight(WEIGHT_STEP)}
                   disabled={selectedIndex === null}
                 >
                   <Plus className="h-3.5 w-3.5" />
@@ -857,7 +869,7 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
               type="button"
               variant="outline"
               onClick={() => setShowClearConfirm(true)}
-              disabled={!hasContent || saving}
+              disabled={(isEditDraft ? !modified : !hasContent) || saving}
             >
               <RotateCcw className="mr-1.5 h-4 w-4" />
               {mode === 'edit' ? '放弃修改' : '清空草稿'}
