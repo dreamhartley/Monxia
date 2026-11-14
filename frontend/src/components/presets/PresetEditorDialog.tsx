@@ -898,9 +898,6 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
           </div>
 
           <div className="flex items-center gap-2">
-            <Button type="button" variant="outline" onClick={handleClose} disabled={saving}>
-              取消
-            </Button>
             {idleEdit ? (
               <Button type="button" onClick={() => void handleExitEdit()} disabled={saving}>
                 {saving && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
