@@ -662,6 +662,25 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
     onClose()
   }
 
+  /**
+   * 编辑模式下没有任何改动时直接退出：不调用保存接口，
+   * 同时清掉这份编辑草稿，之后即可正常创建新画师串。
+   */
+  const handleExitEdit = async () => {
+    if (saving) return
+    setSaving(true)
+    try {
+      await clearPresetDraft()
+      showToast('已退出编辑，草稿已清除', 'success')
+      onClose()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  /** 编辑模式且未改动时，主按钮承担「退出编辑」职责 */
+  const idleEdit = isEditDraft && !modified
+
   const selectedTag = selectedIndex !== null ? tags[selectedIndex] : null
 
   return (
@@ -671,7 +690,9 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
         onKeyDown={(event) => {
           if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
             event.preventDefault()
-            void handleSave()
+            // 未改动时主按钮是「退出编辑」，快捷键保持一致
+            if (idleEdit) void handleExitEdit()
+            else void handleSave()
           }
         }}
         onEscapeKeyDown={(event) => {
@@ -880,10 +901,17 @@ export function PresetEditorDialog({ mode, preset, onClose }: PresetEditorDialog
             <Button type="button" variant="outline" onClick={handleClose} disabled={saving}>
               取消
             </Button>
-            <Button type="button" onClick={() => void handleSave()} disabled={saving || imageBusy}>
-              {saving && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
-              {mode === 'edit' ? '保存' : '创建'}
-            </Button>
+            {idleEdit ? (
+              <Button type="button" onClick={() => void handleExitEdit()} disabled={saving}>
+                {saving && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+                退出编辑
+              </Button>
+            ) : (
+              <Button type="button" onClick={() => void handleSave()} disabled={saving || imageBusy}>
+                {saving && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+                {mode === 'edit' ? '保存' : '创建'}
+              </Button>
+            )}
           </div>
         </DialogFooter>
       </DialogContent>
