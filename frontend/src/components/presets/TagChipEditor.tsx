@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DragEvent as ReactDragEvent, TouchEvent as ReactTouchEvent } from 'react'
-import type { ArtistTag } from '@/lib/artistString'
+import { formatWeight, type ArtistTag } from '@/lib/artistString'
 
 interface TagChipEditorProps {
   tags: ArtistTag[]
@@ -210,7 +210,7 @@ export function TagChipEditor({ tags, onChange, selectedIndex, onSelect }: TagCh
           >
             <span className="max-w-[220px] truncate">{tag.name}</span>
             {tag.weight !== 1 && (
-              <span className="ml-0.5 text-xs opacity-70">:{tag.weight.toFixed(1)}</span>
+              <span className="ml-0.5 text-xs opacity-70">:{formatWeight(tag.weight)}</span>
             )}
           </div>
         ))}
@@ -232,7 +232,7 @@ export function TagChipEditor({ tags, onChange, selectedIndex, onSelect }: TagCh
         >
           <span>{dragGhost.name}</span>
           {dragGhost.weight !== 1 && (
-            <span className="ml-0.5 text-xs opacity-70">:{dragGhost.weight.toFixed(1)}</span>
+            <span className="ml-0.5 text-xs opacity-70">:{formatWeight(dragGhost.weight)}</span>
           )}
         </div>
       )}
